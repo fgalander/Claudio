@@ -22,6 +22,9 @@
   "parlante": null,
   "pitido": true,
   "seguir_conversando": true,
+  "rellenos": true,
+  "relleno_tras": 2.5,
+  "interrumpir": true,
 
   "casa": {
     "url": "",

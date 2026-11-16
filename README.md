@@ -54,6 +54,19 @@ gratis). Elige una con `./venv/bin/python probar_voces.py --motor edge`. Si pref
 probar tu voz de Kokoro igual, pon `"motor_voz": "kokoro"` y
 `"voz": "em_alex:0.8+em_santa:0.2"`; Claudio muestra en pantalla cuánto tarda cada etapa.
 
+## Que se sienta como una charla
+
+- **Frases de relleno.** Cuando va a ejecutar una orden dice algo corto al instante
+  («Enseguida, señor») y luego calla hasta tener el resultado. Si la respuesta se demora
+  más de `relleno_tras` segundos, avisa («Un momento, señor»). El audio de esas frases se
+  genera una vez y queda guardado en `cache_voz/`. Se apagan con `"rellenos": false`.
+- **Interrumpirlo.** Di «Claudio» mientras habla: se calla y te escucha de inmediato. No
+  reacciona a cualquier voz, solo a su nombre, porque sin cancelación de eco se
+  interrumpiría con su propio parlante. Se apaga con `"interrumpir": false`.
+- **Seguir la conversación.** Después de responder sigue escuchando unos segundos, sin
+  que repitas «Claudio».
+- **De corrido.** Puedes decir «Claudio, prende la luz» sin pausa entre el nombre y la orden.
+
 ## Si tienes una Raspberry Pi 4
 
 Funciona, pero es bastante más lenta que la Pi 5. `instalar.sh` la detecta y elige solo

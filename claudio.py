@@ -17,12 +17,15 @@
 #   python claudio.py --modelos  lista los modelos que ofrece Groq con tu clave
 import argparse
 import datetime
+import hashlib
 import io
 import json
 import math
 import queue
+import random
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +63,9 @@ POR_DEFECTO = {
     "parlante": None,
     "pitido": True,
     "seguir_conversando": True,
+    "rellenos": True,
+    "relleno_tras": 2.5,
+    "interrumpir": True,
     "silencio_fin": 0.8,
     "espera_inicio": 6.0,
     "duracion_maxima": 15.0,
@@ -77,6 +83,18 @@ POR_DEFECTO = {
     "casa": {"url": "", "token": "", "dispositivos": {}},
     "pc": {"url": "", "token": "", "mac": ""},
 }
+
+# Frases de relleno: se dicen al instante (el audio queda guardado) para que no haya silencio
+# mientras trabaja. Una sola por turno; después calla hasta tener la respuesta.
+TRABAJANDO = ["Enseguida, señor.", "En ello, señor.", "Un instante.", "Procesando la orden.", "Ahora mismo."]
+ESPERANDO = ["Un momento, señor.", "Permítame un instante.", "Déjeme ver.", "Lo estoy revisando."]
+SALUDO = "Todos los sistemas en línea, señor."
+FIJAS = TRABAJANDO + ESPERANDO + [SALUDO]
+
+
+class Interrumpido(Exception):
+    """El usuario dijo la palabra de activación mientras Claudio hablaba."""
+
 
 # Frases que Whisper inventa cuando solo hay silencio o ruido.
 ALUCINACIONES = ("subtítulos", "subtitulos", "amara.org", "gracias por ver", "suscríbete")
@@ -154,7 +172,11 @@ class Frases:
     """Recibe el texto a medida que llega y dice cada frase apenas está completa."""
 
     def __init__(self, al_hablar):
-        self.al_hablar, self.completo, self.pendiente = al_hablar, "", ""
+        self.al_hablar, self.completo, self.pendiente, self.dichas = al_hablar, "", "", 0
+
+    def _decir(self, frase):
+        self.dichas += 1
+        self.al_hablar(frase)
 
     def agregar(self, trozo):
         self.completo += trozo
@@ -165,12 +187,12 @@ class Frases:
                 return
             frase, self.pendiente = self.pendiente[: corte.end()], self.pendiente[corte.end():]
             if limpiar_para_voz(frase):
-                self.al_hablar(limpiar_para_voz(frase))
+                self._decir(limpiar_para_voz(frase))
 
     def cerrar(self):
-        if limpiar_para_voz(self.pendiente):
-            self.al_hablar(limpiar_para_voz(self.pendiente))
-        self.pendiente = ""
+        resto, self.pendiente = self.pendiente, ""
+        if limpiar_para_voz(resto):
+            self._decir(limpiar_para_voz(resto))
         return self.completo
 
 
@@ -192,13 +214,17 @@ class Cerebro:
         texto = self.config["personalidad"].replace("{nombre}", self.config["nombre"])
         return f"{texto}\nAhora son las {ahora:%H:%M} del {fecha}."
 
+    def _frases(self, al_hablar):
+        self.en_curso = Frases(al_hablar)  # queda a mano por si interrumpen a mitad de respuesta
+        return self.en_curso
+
     def _pedir_groq(self, mensajes, al_hablar):
         cuerpo = {"model": self.modelo, "messages": mensajes, "stream": True,
                   "temperature": 0.5, "max_tokens": 400}
         if self.herramientas:
             cuerpo["tools"] = self.herramientas
         pedido = pedido_groq(self.config, "/chat/completions", json.dumps(cuerpo).encode())
-        frases, llamadas = Frases(al_hablar), {}
+        frases, llamadas = self._frases(al_hablar), {}
         with urllib.request.urlopen(pedido, timeout=60) as respuesta:
             for linea in respuesta:
                 linea = linea.decode("utf-8", "replace").strip()
@@ -248,7 +274,7 @@ class Cerebro:
             self.config["ollama_url"].rstrip("/") + "/api/chat",
             data=json.dumps(cuerpo).encode(), headers={"Content-Type": "application/json"},
         )
-        frases, llamadas = Frases(al_hablar), []
+        frases, llamadas = self._frases(al_hablar), []
         with urllib.request.urlopen(pedido, timeout=300) as respuesta:
             for linea in respuesta:
                 if not linea.strip():
@@ -274,15 +300,29 @@ class Cerebro:
         while self.historial and self.historial[0]["role"] != "user":
             self.historial.pop(0)
         pedir = self._pedir_groq if self.groq else self._pedir_ollama
+        dichas = 0
         for _ in range(4):  # como mucho 4 rondas de herramientas por pregunta
             mensajes = [{"role": "system", "content": self._sistema()}] + self.historial
-            contenido, llamadas = pedir(mensajes, al_hablar)
+            try:
+                contenido, llamadas = pedir(mensajes, al_hablar)
+            except Interrumpido:
+                # Guarda lo que alcanzó a decir, para que la charla siga teniendo sentido.
+                self.historial.append({"role": "assistant", "content": self.en_curso.completo.strip() or "…"})
+                raise
+            dichas += self.en_curso.dichas
             mensaje = {"role": "assistant", "content": contenido}
             if llamadas:
                 mensaje["tool_calls"] = llamadas
             self.historial.append(mensaje)
             if not llamadas:
                 return
+            if not dichas and self.config["rellenos"]:
+                dichas += 1
+                try:
+                    al_hablar(random.choice(TRABAJANDO))
+                except Interrumpido:
+                    self.historial[-1] = {"role": "assistant", "content": "…"}  # sin herramientas a medias
+                    raise
             for llamada in llamadas:
                 nombre = llamada["function"]["name"]
                 try:
@@ -306,7 +346,9 @@ class Audio:
 
         self.np, self.sd, self.config = numpy, sounddevice, config
         self.cola = queue.Queue()
-        self.sordo = False  # mientras Claudio habla no se escucha a sí mismo
+        self.candado = threading.Lock()  # una sola voz a la vez (el relleno sale de otro hilo)
+        self.interrumpido = False
+        self.guardadas = {}  # audio ya generado de las frases fijas
         self.ruido = float(config["umbral_minimo"]) / 3
 
         SetLogLevel(-1)
@@ -350,10 +392,35 @@ class Audio:
             device=config["microfono"], callback=self._llega_audio,
         )
         self.entrada.start()
+        if config["rellenos"]:
+            self._preparar_fijas()
 
     def _llega_audio(self, datos, cuadros, tiempo, estado):
-        if not self.sordo:
-            self.cola.put(bytes(datos))
+        self.cola.put(bytes(datos))
+
+    def _preparar_fijas(self):
+        """Genera una vez el audio de las frases fijas y lo guarda en disco: después salen al instante."""
+        c = self.config
+        carpeta = AQUI / "cache_voz"
+        carpeta.mkdir(exist_ok=True)
+        avisado = False
+        for texto in FIJAS:
+            firma = json.dumps([c["motor_voz"], c["voz"], c["velocidad_voz"], c["tono_voz"], c["efecto_voz"], texto])
+            archivo = carpeta / (hashlib.sha1(firma.encode()).hexdigest()[:16] + ".npz")
+            try:
+                if archivo.exists():
+                    datos = self.np.load(archivo)
+                    self.guardadas[texto] = (datos["muestras"], int(datos["frecuencia"]))
+                    continue
+                if not avisado:
+                    print("Preparando frases rápidas (solo la primera vez)…")
+                    avisado = True
+                trozos = list(self.voz.sintetizar(texto))
+                muestras = self.np.concatenate([m for m, _ in trozos])
+                self.np.savez(archivo, muestras=muestras, frecuencia=trozos[0][1])
+                self.guardadas[texto] = (muestras, trozos[0][1])
+            except Exception as error:
+                print(f"  ⚠ no pude preparar «{texto}»: {error}")
 
     def _vaciar(self):
         while not self.cola.empty():
@@ -374,11 +441,7 @@ class Audio:
             volumen = self._volumen(bloque)
             # Ruido ambiente: baja rápido y sube lento, así la voz no lo infla.
             self.ruido += (volumen - self.ruido) * (0.2 if volumen < self.ruido else 0.01)
-            if detector.AcceptWaveform(bloque):
-                oido = json.loads(detector.Result()).get("text", "")
-            else:
-                oido = json.loads(detector.PartialResult()).get("partial", "")
-            if any(palabra in oido for palabra in self.palabras):
+            if self._oye_palabra(detector, bloque):
                 return
 
     def grabar_frase(self):
@@ -418,30 +481,49 @@ class Audio:
             return ""
         return texto
 
+    def _oye_palabra(self, detector, bloque):
+        if detector.AcceptWaveform(bloque):
+            oido = json.loads(detector.Result()).get("text", "")
+        else:
+            oido = json.loads(detector.PartialResult()).get("partial", "")
+        return any(palabra in oido for palabra in self.palabras)
+
     def decir(self, texto):
-        print(f"🔊 {texto}")
-        self.sordo = True
-        try:
-            for muestras, frecuencia in self.voz.sintetizar(texto):
-                self.sd.play(muestras, frecuencia, device=self.config["parlante"], blocking=True)
-        except Exception as error:
-            print(f"   ✖ voz: {error}")
-        finally:
+        """Habla. Si mientras tanto oye la palabra de activación, se calla y lanza Interrumpido."""
+        with self.candado:
+            if self.interrumpido:
+                raise Interrumpido()
+            print(f"🔊 {texto}")
+            detector = self.nuevo_detector() if self.config["interrumpir"] else None
+            self._vaciar()
+            try:
+                trozos = [self.guardadas[texto]] if texto in self.guardadas else self.voz.sintetizar(texto)
+                for muestras, frecuencia in trozos:
+                    self.sd.play(muestras, frecuencia, device=self.config["parlante"])
+                    fin = time.time() + len(muestras) / frecuencia + 0.1
+                    while time.time() < fin:
+                        try:
+                            bloque = self.cola.get(timeout=0.05)
+                        except queue.Empty:
+                            continue
+                        if detector and self._oye_palabra(detector, bloque):
+                            self.sd.stop()
+                            self.interrumpido = True
+                            raise Interrumpido()
+            except Interrumpido:
+                raise
+            except Exception as error:
+                print(f"   ✖ voz: {error}")
             time.sleep(0.15)  # que se apague el eco de la sala
             self._vaciar()
-            self.sordo = False
 
     def pitido(self, tono=880):
+        # No bloquea ni descarta audio: así no se pierde el inicio de «Claudio, prende la luz».
         if not self.config["pitido"]:
             return
         t = self.np.arange(int(22050 * 0.12)) / 22050
         onda = (self.np.sin(2 * math.pi * tono * t) * 0.25 * 32767).astype(self.np.int16)
-        self.sordo = True
-        try:
-            self.sd.play(onda, 22050, device=self.config["parlante"], blocking=True)
-        finally:
-            self._vaciar()
-            self.sordo = False
+        self.sd.play(onda, 22050, device=self.config["parlante"])
 
 
 # ───────────────────────── Modos ─────────────────────────
@@ -487,9 +569,16 @@ def modo_voz(config):
     audio = Audio(config)
     cerebro = Cerebro(config)
     print(f"\n✔ Listo. Di «{audio.palabras[0]}» para hablarme. Ctrl+C para salir.\n")
-    audio.decir("Todos los sistemas en línea, señor.")
+    try:
+        audio.decir(SALUDO)
+    except Interrumpido:
+        pass
+    despierto = False
     while True:
-        audio.esperar_palabra()
+        if not despierto:
+            audio.esperar_palabra()
+        despierto = False
+        audio.interrumpido = False
         print("👂 te escucho…")
         audio.pitido()
         while True:
@@ -497,31 +586,56 @@ def modo_voz(config):
             if grabacion is None:
                 break
             inicio = time.time()
-            try:
-                texto = audio.transcribir(grabacion)
-            except Exception as error:
-                avisar_error(error, audio.decir)
-                break
-            if not texto:
-                break
-            oido = time.time() - inicio
-            print(f"🗣  {texto}")
             primera = []  # cuánto tardó en empezar a hablar
+            oido = [0.0]
+
+            def relleno():  # corre en otro hilo si la respuesta se demora
+                if primera:
+                    return
+                primera.append(time.time() - inicio)
+                try:
+                    audio.decir(random.choice(ESPERANDO))
+                except Interrumpido:
+                    pass  # queda anotado en audio.interrumpido
+
+            reloj = threading.Timer(float(config["relleno_tras"]), relleno)
+            reloj.daemon = True
+            if config["rellenos"]:
+                reloj.start()
 
             def decir(frase):
+                reloj.cancel()
                 if not primera:
                     primera.append(time.time() - inicio)
-                    print(f"   ⏱ entender {oido:.1f} s · pensar {primera[0] - oido:.1f} s (la voz se suma después)")
+                    print(f"   ⏱ entender {oido[0]:.1f} s · pensar {primera[0] - oido[0]:.1f} s (la voz se suma después)")
                 audio.decir(frase)
 
             try:
+                texto = audio.transcribir(grabacion)
+                if not texto:
+                    reloj.cancel()
+                    break
+                oido[0] = time.time() - inicio
+                print(f"🗣  {texto}")
                 cerebro.responder(texto, decir)
+            except Interrumpido:
+                pass
             except Exception as error:
-                avisar_error(error, audio.decir)
+                reloj.cancel()
+                try:
+                    avisar_error(error, audio.decir)
+                except Interrumpido:
+                    pass
+            reloj.cancel()
+            if audio.interrumpido:  # dijeron «Claudio» mientras hablaba: a escuchar de inmediato
+                print("✋ interrumpido")
+                despierto = True
+                break
             if not config["seguir_conversando"]:
                 break
             audio.pitido(660)  # sigue escuchando unos segundos sin repetir la palabra
-        print("💤 esperando la palabra de activación")
+        if not despierto:
+            print("💤 esperando la palabra de activación")
 
 
 def main():
