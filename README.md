@@ -65,6 +65,9 @@ probar tu voz de Kokoro igual, pon `"motor_voz": "kokoro"` y
   interrumpiría con su propio parlante. Se apaga con `"interrumpir": false`.
 - **Seguir la conversación.** Después de responder sigue escuchando unos segundos, sin
   que repitas «Claudio».
+- **Sin cortes.** El parlante queda abierto todo el tiempo, con un ruido inaudible entre
+  frases, porque muchos parlantes USB se comen el primer segundo al despertar. Si aun así
+  corta el inicio, sube `"mantener_parlante"` (por ejemplo a 30); con 0 se desactiva.
 - **De corrido.** Puedes decir «Claudio, prende la luz» sin pausa entre el nombre y la orden.
 
 ## Si tienes una Raspberry Pi 4
@@ -177,39 +180,71 @@ Assistant. Claudio solo puede tocar lo que esté en esa lista.
 
 ## Gmail y Google Calendar
 
-Claudio puede decirte qué correos tienes sin leer, leerte uno y contarte tu agenda. Es
-**solo lectura**: no puede enviar correos ni crear eventos. No hace falta crear un proyecto
-en Google Cloud.
+Claudio puede decirte qué correos tienes, leerte uno, **responder o escribir correos** y
+contarte tu agenda y **crear citas**. No hace falta un proyecto en Google Cloud.
 
-**Correo.** Necesita una *contraseña de aplicación* (distinta de tu contraseña normal, y
-que puedes revocar cuando quieras):
+### Correo (leer y enviar)
+
+Necesita una *contraseña de aplicación* (distinta de tu contraseña normal, y revocable):
 
 1. Activa la verificación en dos pasos en <https://myaccount.google.com/security>.
 2. Crea la contraseña en <https://myaccount.google.com/apppasswords> (nombre: Claudio).
-   Google muestra 16 letras.
 3. En `config.json`:
 
    ```json
-   "correo": { "usuario": "tucuenta@gmail.com", "clave_app": "abcd efgh ijkl mnop" }
+   "correo": {
+     "usuario": "tucuenta@gmail.com",
+     "clave_app": "abcd efgh ijkl mnop",
+     "contactos": { "maría": "maria@ejemplo.com", "jefe": "jefe@empresa.com" }
+   }
    ```
 
-**Calendario.** En <https://calendar.google.com>: rueda de ajustes → elige tu calendario a
-la izquierda → *Integrar el calendario* → copia la **dirección secreta en formato iCal**.
+Enviar tiene dos seguros que no dependen de que el modelo se porte bien:
 
-```json
-"calendario": { "url_ical": "https://calendar.google.com/calendar/ical/.../basic.ics" }
-```
+- Solo puede escribir a los `contactos` de esa lista, o responder a un correo que acaba de
+  listar. No puede inventar un destinatario.
+- Nunca envía en el mismo momento en que redacta: prepara un borrador, te lo lee, y recién
+  cuando le respondes puede enviarlo.
 
-Para varios calendarios, pon una lista: `"url_ical": ["https://...", "https://..."]`.
+### Agenda (leer)
 
-Después instala las dos librerías nuevas con `./venv/bin/pip install -r requirements.txt`.
+En <https://calendar.google.com>: ajustes → tu calendario a la izquierda → *Integrar el
+calendario* → copia la **dirección secreta en formato iCal** y ponla en `url_ical`.
+Para varios calendarios, usa una lista: `"url_ical": ["https://...", "https://..."]`.
 
-Ten presente: esa contraseña y esa dirección dan acceso de lectura a tu correo y agenda,
-así que cuida `config.json`. Y en modo Groq, el texto de los correos y eventos que Claudio
-consulta se envía a Groq para poder resumirlo.
+### Citas (crear)
 
-Ejemplos: «¿tengo correos nuevos?», «léeme el segundo», «¿hay algo de mi banco?»,
-«¿qué tengo mañana?», «¿cómo viene la semana?».
+Google no deja crear citas con la dirección iCal, así que se usa un pequeño programa que
+corre dentro de tu propia cuenta:
+
+1. Entra a <https://script.google.com> → **Nuevo proyecto**.
+2. Borra lo que aparece y pega el contenido de `google_calendario.gs`.
+3. En la línea `const CLAVE`, cambia el texto por una clave larga inventada por ti.
+4. **Implementar** → **Nueva implementación** → tipo **Aplicación web**. Ejecutar como:
+   **Yo**. Quién tiene acceso: **Cualquier persona**. Pulsa *Implementar* y autoriza.
+5. Copia la **URL de la aplicación web** y ponla en `config.json` junto con tu clave:
+
+   ```json
+   "calendario": {
+     "url_ical": "https://calendar.google.com/calendar/ical/.../basic.ics",
+     "url_script": "https://script.google.com/macros/s/.../exec",
+     "clave_script": "la-clave-que-inventaste"
+   }
+   ```
+
+«Cualquier persona» significa que la URL responde sin iniciar sesión, pero sin la clave
+no hace nada. Por eso la clave debe ser larga y no compartirse.
+
+### Ten presente
+
+- `config.json` contiene accesos a tu correo y agenda: cuídalo.
+- En modo Groq, el texto de los correos y eventos que consultas se envía a Groq.
+- Un correo puede traer texto escrito para engañar a un asistente. Claudio lo trata como
+  datos, y los dos seguros de envío limitan el daño, pero el riesgo no es cero.
+
+Ejemplos: «¿tengo correos nuevos?», «léeme el segundo», «respóndele que sí, que el jueves
+puedo», «escríbele a María que llego tarde», «¿qué tengo mañana?», «agéndame dentista el
+viernes a las tres y media».
 
 ## Controlar el PC
 

@@ -15,6 +15,7 @@
 #
 # Todos devuelven lo mismo: trozos (muestras int16, frecuencia) listos para reproducir.
 import subprocess
+import threading
 from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
@@ -149,20 +150,54 @@ def cambiar_frecuencia(muestras, origen, destino):
     return numpy.interp(posiciones, numpy.arange(len(muestras)), muestras).astype(numpy.int16)
 
 
-def para_parlante(muestras, frecuencia, dispositivo):
-    """Adapta el audio a lo que el parlante acepta. Muchos parlantes USB solo admiten
-    44100 o 48000 Hz en estéreo, y las voces salen a 22050 o 24000 Hz en mono."""
-    import numpy
-    import sounddevice
-    try:
+class Salida:
+    """Parlante siempre abierto. Abrirlo y cerrarlo en cada frase hace que muchos parlantes
+    USB se coman el primer segundo: tardan en despertar. Aquí el canal queda abierto todo el
+    tiempo, con un ruido inaudible entre frases para que el parlante no se duerma."""
+
+    def __init__(self, dispositivo, mantener=3):
+        import numpy
+        import sounddevice
+        self.np, self.mantener = numpy, int(mantener or 0)
         datos = sounddevice.query_devices(dispositivo if dispositivo is not None else sounddevice.default.device[1])
-        destino, canales = int(datos["default_samplerate"]), int(datos["max_output_channels"])
-    except Exception:
-        return muestras, frecuencia
-    muestras = cambiar_frecuencia(muestras, frecuencia, destino)
-    if canales >= 2 and muestras.ndim == 1:
-        muestras = numpy.column_stack([muestras, muestras])
-    return muestras, destino
+        self.frecuencia = int(datos["default_samplerate"])
+        self.canales = 2 if int(datos["max_output_channels"]) >= 2 else 1
+        self.pendiente = numpy.zeros(0, dtype=numpy.int16)
+        self.candado = threading.Lock()
+        self.flujo = sounddevice.OutputStream(
+            samplerate=self.frecuencia, channels=self.canales, dtype="int16",
+            device=dispositivo, callback=self._llenar,
+        )
+        self.flujo.start()
+
+    def _llenar(self, salida, cuadros, tiempo, estado):
+        with self.candado:
+            trozo, self.pendiente = self.pendiente[:cuadros], self.pendiente[cuadros:]
+        if self.mantener:
+            bloque = self.np.random.randint(-self.mantener, self.mantener + 1, cuadros).astype(self.np.int16)
+        else:
+            bloque = self.np.zeros(cuadros, dtype=self.np.int16)
+        bloque[: len(trozo)] = trozo
+        salida[:] = bloque.reshape(-1, 1)
+
+    def reproducir(self, muestras, frecuencia):
+        """Agrega audio a la cola y vuelve de inmediato."""
+        muestras = cambiar_frecuencia(self.np.asarray(muestras, dtype=self.np.int16), frecuencia, self.frecuencia)
+        with self.candado:
+            self.pendiente = self.np.concatenate([self.pendiente, muestras])
+
+    def segundos(self):
+        return len(self.pendiente) / self.frecuencia
+
+    def detener(self):
+        with self.candado:
+            self.pendiente = self.np.zeros(0, dtype=self.np.int16)
+
+    def esperar(self):
+        import time
+        while self.segundos() > 0:
+            time.sleep(0.05)
+        time.sleep(0.15)
 
 
 def crear_voz(config):

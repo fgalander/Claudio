@@ -21,6 +21,7 @@
   "microfono": null,
   "parlante": null,
   "pitido": true,
+  "mantener_parlante": 3,
   "seguir_conversando": true,
   "rellenos": true,
   "relleno_tras": 2.5,
@@ -38,11 +39,16 @@
 
   "correo": {
     "usuario": "",
-    "clave_app": ""
+    "clave_app": "",
+    "contactos": {
+      "maría": "maria@ejemplo.com"
+    }
   },
 
   "calendario": {
-    "url_ical": ""
+    "url_ical": "",
+    "url_script": "",
+    "clave_script": ""
   },
 
   "pc": {

@@ -13,6 +13,7 @@
 import argparse
 import subprocess
 import sys
+import time
 import wave
 from pathlib import Path
 
@@ -80,6 +81,7 @@ def main():
     args = opciones.parse_args()
 
     lista = [(args.voz, "")] if args.voz else CATALOGO[args.motor]
+    salida = None
     for voz, descripcion in lista:
         config = {"motor_voz": args.motor, "voz": voz, "velocidad_voz": args.velocidad,
                   "tono_voz": args.tono, "efecto_voz": args.efecto}
@@ -110,11 +112,12 @@ def main():
                     salida.writeframes(muestras.tobytes())
             print(f"  guardada en {destino}")
         else:
-            import sounddevice
-            parlante = voces.elegir_dispositivo(args.parlante, salida=True)
+            if salida is None:
+                salida = voces.Salida(voces.elegir_dispositivo(args.parlante, salida=True))
+                time.sleep(1.0)  # deja que el parlante despierte antes de la primera frase
             for muestras, frecuencia in trozos:
-                muestras, frecuencia = voces.para_parlante(muestras, frecuencia, parlante)
-                sounddevice.play(muestras, frecuencia, device=parlante, blocking=True)
+                salida.reproducir(muestras, frecuencia)
+            salida.esperar()
 
 
 if __name__ == "__main__":

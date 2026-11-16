@@ -70,6 +70,11 @@ def definiciones(config):
     return lista + correo_agenda.definiciones(config)
 
 
+def nuevo_turno():
+    """Lo llama el cerebro cada vez que el usuario habla (ver los seguros de correo_agenda)."""
+    correo_agenda.nuevo_turno()
+
+
 def ejecutar(config, nombre, argumentos):
     """Devuelve siempre un texto corto que el modelo lee como resultado."""
     try:
