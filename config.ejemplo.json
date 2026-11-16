@@ -5,7 +5,7 @@
   "proveedor": "local",
   "groq": {
     "clave": "",
-    "modelo": "llama-3.3-70b-versatile",
+    "modelo": "openai/gpt-oss-120b",
     "modelo_oido": "whisper-large-v3-turbo"
   },
 

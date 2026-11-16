@@ -47,7 +47,8 @@ POR_DEFECTO = {
     "groq": {
         "url": "https://api.groq.com/openai/v1",
         "clave": "",
-        "modelo": "llama-3.3-70b-versatile",
+        "modelo": "openai/gpt-oss-120b",
+        "razonamiento": "low",
         "modelo_oido": "whisper-large-v3-turbo",
     },
     "ollama_url": "http://127.0.0.1:11434",
@@ -220,7 +221,11 @@ class Cerebro:
 
     def _pedir_groq(self, mensajes, al_hablar):
         cuerpo = {"model": self.modelo, "messages": mensajes, "stream": True,
-                  "temperature": 0.5, "max_tokens": 400}
+                  "temperature": 0.5, "max_tokens": 1024}
+        # Los gpt-oss razonan antes de contestar: se les pide lo mínimo para no perder tiempo.
+        # Ese razonamiento llega aparte del texto y no se lee en voz alta.
+        if self.modelo.startswith("openai/gpt-oss") and self.config["groq"].get("razonamiento"):
+            cuerpo["reasoning_effort"] = self.config["groq"]["razonamiento"]
         if self.herramientas:
             cuerpo["tools"] = self.herramientas
         pedido = pedido_groq(self.config, "/chat/completions", json.dumps(cuerpo).encode())
