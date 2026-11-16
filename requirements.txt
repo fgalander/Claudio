@@ -1,0 +1,7 @@
+vosk
+faster-whisper
+kokoro-onnx
+piper-tts
+edge-tts
+sounddevice
+numpy

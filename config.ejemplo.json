@@ -1,0 +1,41 @@
+{
+  "nombre": "Claudio",
+  "palabra_activacion": ["claudio"],
+
+  "proveedor": "local",
+  "groq": {
+    "clave": "",
+    "modelo": "llama-3.3-70b-versatile",
+    "modelo_oido": "whisper-large-v3-turbo"
+  },
+
+  "ollama_url": "http://127.0.0.1:11434",
+  "modelo": "qwen2.5:3b",
+  "whisper": "base",
+  "motor_voz": "kokoro",
+  "voz": "em_alex:0.8+em_santa:0.2",
+  "velocidad_voz": 1.0,
+  "tono_voz": 0,
+  "efecto_voz": 0,
+
+  "microfono": null,
+  "parlante": null,
+  "pitido": true,
+  "seguir_conversando": true,
+
+  "casa": {
+    "url": "",
+    "token": "",
+    "dispositivos": {
+      "luz del living": "light.living",
+      "enchufe del escritorio": "switch.escritorio",
+      "temperatura del dormitorio": "sensor.dormitorio_temperature"
+    }
+  },
+
+  "pc": {
+    "url": "",
+    "token": "",
+    "mac": ""
+  }
+}
