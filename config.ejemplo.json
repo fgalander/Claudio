@@ -31,11 +31,7 @@
   "casa": {
     "url": "",
     "token": "",
-    "dispositivos": {
-      "luz del living": "light.living",
-      "enchufe del escritorio": "switch.escritorio",
-      "temperatura del dormitorio": "sensor.dormitorio_temperature"
-    }
+    "dispositivos": {}
   },
 
   "correo": {
@@ -51,6 +47,9 @@
     "url_script": "",
     "clave_script": ""
   },
+
+  "ciudad": "",
+  "resumen_diario": "",
 
   "pc": {
     "url": "",

@@ -4,3 +4,4 @@ venv/
 modelos/
 muestras/
 cache_voz/
+recordatorios.json

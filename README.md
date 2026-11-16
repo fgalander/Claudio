@@ -163,23 +163,29 @@ Ajustes en `config.json`:
 
 ## Controlar la casa
 
-Claudio habla con [Home Assistant](https://www.home-assistant.io/), que es gratis y puede
-correr en la misma Pi o en otra. En Home Assistant: tu perfil → Seguridad → *Tokens de
-acceso de larga duración* → crear uno. Luego, en `config.json`:
+Claudio maneja la casa a través de [Home Assistant](https://www.home-assistant.io/), un
+programa gratuito que reúne luces, enchufes, aire acondicionado, persianas y sensores de
+casi todas las marcas (Tuya/Smart Life, Sonoff, Philips Hue, Xiaomi, TP-Link, Shelly…).
+Puede correr en la misma Pi o en otro equipo.
+
+En Home Assistant: tu perfil → Seguridad → *Tokens de acceso de larga duración* → crear
+uno. Luego, en `config.json`:
 
 ```json
-"casa": {
-  "url": "http://192.168.1.50:8123",
-  "token": "EL_TOKEN",
-  "dispositivos": {
-    "luz del living": "light.living",
-    "temperatura del dormitorio": "sensor.dormitorio_temperature"
-  }
-}
+"casa": { "url": "http://192.168.1.50:8123", "token": "EL_TOKEN", "dispositivos": {} }
 ```
 
-A la izquierda va el nombre con que tú lo dices; a la derecha, el `entity_id` de Home
-Assistant. Claudio solo puede tocar lo que esté en esa lista.
+Con `dispositivos` vacío, Claudio lee solo todos los que Home Assistant tenga y los llama
+por el nombre que les pusiste allá. Si prefieres limitar o renombrar, lista los que
+quieras: `"dispositivos": { "luz del living": "light.living" }`.
+
+Qué puede hacer: encender, apagar y alternar; **brillo** («pon la luz al cuarenta por
+ciento»); **color** («ponla azul», «luz cálida»); **temperatura** del aire («pon el aire
+en veintidós»); abrir y cerrar persianas; activar **escenas** («modo cine»); volumen de
+parlantes; «apaga todas las luces»; y consultar sensores («¿qué temperatura hay afuera?»).
+
+Las cerraduras no se toman automáticamente: para abrir una puerta por voz hay que
+agregarla a mano en `dispositivos`, sabiendo el riesgo.
 
 ## Gmail y Google Calendar
 
@@ -216,10 +222,10 @@ En <https://calendar.google.com>: ajustes → tu calendario a la izquierda → *
 calendario* → copia la **dirección secreta en formato iCal** y ponla en `url_ical`.
 Para varios calendarios, usa una lista: `"url_ical": ["https://...", "https://..."]`.
 
-### Citas (crear)
+### Citas (crear, mover y cancelar)
 
-Google no deja crear citas con la dirección iCal, así que se usa un pequeño programa que
-corre dentro de tu propia cuenta:
+Google no deja modificar el calendario con la dirección iCal, así que se usa un pequeño
+programa que corre dentro de tu propia cuenta:
 
 1. Entra a <https://script.google.com> → **Nuevo proyecto**.
 2. Borra lo que aparece y pega el contenido de `google_calendario.gs`.
@@ -239,6 +245,15 @@ corre dentro de tu propia cuenta:
 «Cualquier persona» significa que la URL responde sin iniciar sesión, pero sin la clave
 no hace nada. Por eso la clave debe ser larga y no compartirse.
 
+**Si ya habías publicado una versión anterior del script** (la que solo creaba citas):
+reemplaza el código por el nuevo, conserva tu clave, y publica con *Implementar* →
+*Gestionar implementaciones* → lápiz → Versión: **Nueva versión** → *Implementar*. Así la
+dirección no cambia.
+
+Mover y cancelar funcionan sobre tu calendario principal. Cancelar pide confirmación:
+Claudio te dice qué cita es y la borra recién cuando le respondes que sí. En una cita que
+se repite, solo toca la fecha indicada.
+
 ### Ten presente
 
 - `config.json` contiene accesos a tu correo y agenda: cuídalo.
@@ -247,8 +262,24 @@ no hace nada. Por eso la clave debe ser larga y no compartirse.
   datos, y los dos seguros de envío limitan el daño, pero el riesgo no es cero.
 
 Ejemplos: «¿tengo correos nuevos?», «léeme el segundo», «respóndele que sí, que el jueves
-puedo», «escríbele a María que llego tarde», «¿qué tengo mañana?», «agéndame dentista el
-viernes a las tres y media».
+puedo», «escríbele a María que llego tarde», «archiva los dos primeros», «¿qué tengo
+mañana?», «agéndame dentista el viernes a las tres y media», «pásame el dentista al
+lunes a las diez», «cancela la reunión de mañana».
+
+## Recordatorios, clima, noticias e internet
+
+No necesitan claves ni cuentas.
+
+- **Recordatorios y temporizadores:** «recuérdame en veinte minutos sacar la pizza»,
+  «avísame mañana a las nueve que llame al banco», «¿qué recordatorios tengo?». Avisa en
+  voz alta a la hora, y se guardan aunque la Pi se reinicie.
+- **Clima:** «¿va a llover mañana?». Deja tu ciudad fija con `"ciudad": "Córdoba"`.
+- **Noticias:** «¿qué noticias hay?», «noticias de fútbol». Para la edición de tu país:
+  `"noticias": { "pais": "AR", "idioma": "es-419" }` (AR, CL, MX, CO, ES…).
+- **Buscar en internet:** «¿a cuánto está el dólar?», «¿quién ganó ayer?». Usa DuckDuckGo
+  por una vía no oficial, que puede fallar algún día sin aviso.
+- **Resumen del día:** «dame mi resumen» junta agenda, correos sin leer, recordatorios y
+  clima. Para que lo diga solo cada mañana: `"resumen_diario": "08:00"`.
 
 ## Controlar el PC
 

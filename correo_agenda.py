@@ -28,6 +28,8 @@ import urllib.request
 _ultimos = []  # la última lista de correos (uid, remitente, asunto…), para "léeme el segundo"
 _turno = 0  # cuántas veces ha hablado el usuario
 _borrador = None  # correo redactado que espera confirmación
+_eventos = []  # la última agenda consultada, para "cancela el segundo"
+_por_cancelar = None  # cita que espera confirmación para cancelarse
 
 
 def nuevo_turno():
@@ -79,6 +81,14 @@ def definiciones(config):
             "parameters": {"type": "object", "properties": {}},
         }})
         lista.append({"type": "function", "function": {
+            "name": "gestionar_correos",
+            "description": "Marca como leídos o archiva correos de la última lista, por sus números.",
+            "parameters": {"type": "object", "required": ["numeros", "accion"], "properties": {
+                "numeros": {"type": "array", "items": {"type": "integer"}},
+                "accion": {"type": "string", "enum": ["marcar_leido", "archivar"]},
+            }},
+        }})
+        lista.append({"type": "function", "function": {
             "name": "leer_correo",
             "description": "Trae el texto de un correo de la última lista, por su número.",
             "parameters": {"type": "object", "required": ["numero"], "properties": {
@@ -88,7 +98,7 @@ def definiciones(config):
     if calendario.get("url_ical"):
         lista.append({"type": "function", "function": {
             "name": "agenda",
-            "description": "Consulta los eventos del calendario del usuario a partir de un día.",
+            "description": "Consulta los eventos del calendario del usuario a partir de un día. Los devuelve numerados.",
             "parameters": {"type": "object", "properties": {
                 "desde": {"type": "string", "description": "'hoy', 'mañana' o una fecha AAAA-MM-DD; por defecto hoy"},
                 "dias": {"type": "integer", "description": "cuántos días abarcar, entre 1 y 14; por defecto 1"},
@@ -105,6 +115,26 @@ def definiciones(config):
                 "lugar": {"type": "string"},
             }},
         }})
+        if calendario.get("url_ical"):
+            lista.append({"type": "function", "function": {
+                "name": "mover_evento",
+                "description": "Cambia la fecha u hora de una cita de la última agenda consultada, por su número.",
+                "parameters": {"type": "object", "required": ["numero", "nuevo_inicio"], "properties": {
+                    "numero": {"type": "integer"},
+                    "nuevo_inicio": {"type": "string", "description": "AAAA-MM-DDTHH:MM en hora local; solo AAAA-MM-DD si es de todo el día"},
+                }},
+            }})
+            lista.append({"type": "function", "function": {
+                "name": "cancelar_evento",
+                "description": (
+                    "Cancela (borra) una cita de la última agenda consultada, por su número. La primera llamada "
+                    "solo la deja pendiente: dile al usuario cuál es y pregúntale si la cancelas; "
+                    "cuando confirme, llama otra vez con el mismo número."
+                ),
+                "parameters": {"type": "object", "required": ["numero"], "properties": {
+                    "numero": {"type": "integer"},
+                }},
+            }})
     return lista
 
 
@@ -115,6 +145,12 @@ def ejecutar(config, nombre, argumentos):
         return _enviar(config["correo"])
     if nombre == "crear_evento":
         return _crear_evento(config["calendario"], argumentos)
+    if nombre == "mover_evento":
+        return _mover_evento(config["calendario"], argumentos)
+    if nombre == "cancelar_evento":
+        return _cancelar_evento(config["calendario"], argumentos)
+    if nombre == "gestionar_correos":
+        return _gestionar_correos(config["correo"], argumentos)
     if nombre == "correos_recientes":
         return _correos_recientes(config["correo"], argumentos)
     if nombre == "leer_correo":
@@ -132,7 +168,7 @@ def _entero(valor, defecto, minimo, maximo):
         return defecto
 
 
-def _conectar(correo):
+def _conectar(correo, escribir=False):
     buzon = imaplib.IMAP4_SSL(correo.get("servidor", "imap.gmail.com"), timeout=15)
     try:
         buzon.login(correo["usuario"], correo["clave_app"].replace(" ", ""))
@@ -140,7 +176,7 @@ def _conectar(correo):
         raise RuntimeError(
             "Gmail rechazó el acceso. Revisa el usuario y la contraseña de aplicación en config.json"
         ) from error
-    buzon.select("INBOX", readonly=True)  # solo lectura: no marca nada como leído
+    buzon.select("INBOX", readonly=not escribir)  # al leer no se marca nada como leído
     return buzon
 
 
@@ -237,6 +273,31 @@ def _leer_correo(correo, argumentos):
         return AVISO + f"De: {_cabecera(mensaje['From'])}\nAsunto: {_cabecera(mensaje['Subject'])}\n\n{texto}"
     finally:
         buzon.logout()
+
+
+def _gestionar_correos(correo, argumentos):
+    accion = argumentos.get("accion")
+    if accion not in ("marcar_leido", "archivar"):
+        return "Acción no válida: usa marcar_leido o archivar."
+    numeros = argumentos.get("numeros")
+    numeros = numeros if isinstance(numeros, list) else [numeros]
+    elegidos = sorted({_entero(n, 0, 0, 99) for n in numeros})
+    if not _ultimos:
+        return "Primero hay que listar los correos con correos_recientes."
+    if not elegidos or not all(1 <= n <= len(_ultimos) for n in elegidos):
+        return f"Números no válidos: la lista va del 1 al {len(_ultimos)}."
+    buzon = _conectar(correo, escribir=True)
+    try:
+        for numero in elegidos:
+            uid = _ultimos[numero - 1]["uid"]
+            if accion == "marcar_leido":
+                buzon.uid("STORE", uid, "+FLAGS", "(\\Seen)")
+            else:  # en Gmail, archivar es quitar la etiqueta de la bandeja de entrada
+                buzon.uid("STORE", uid, "-X-GM-LABELS", "(\\Inbox)")
+    finally:
+        buzon.logout()
+    hecho = "marcados como leídos" if accion == "marcar_leido" else "archivados"
+    return f"{len(elegidos)} correo(s) {hecho}: " + "; ".join(_ultimos[n - 1]["asunto"] or "(sin asunto)" for n in elegidos)
 
 
 def _redactar(correo, argumentos):
@@ -398,15 +459,114 @@ def _agenda(calendario, argumentos):
             dia = comienzo if todo_el_dia else comienzo.date()
             orden = (dia, datetime.time.min if todo_el_dia else comienzo.time())
             lugar = str(evento.get("LOCATION") or "").strip()
-            eventos.append((orden, dia, "todo el día" if todo_el_dia else f"{comienzo:%H:%M}",
-                            str(evento.get("SUMMARY") or "(sin título)"), lugar))
+            titulo = str(evento.get("SUMMARY") or "(sin título)")
+            termino = evento["DTEND"].dt if evento.get("DTEND") else comienzo
+            if todo_el_dia:
+                duracion = 0
+                momento = datetime.datetime.combine(comienzo, datetime.time(12, 0), zona)
+            else:
+                if isinstance(termino, datetime.datetime):
+                    termino = termino.astimezone(zona) if termino.tzinfo else termino.replace(tzinfo=zona)
+                    duracion = max(5, int((termino - comienzo).total_seconds() // 60))
+                else:
+                    duracion = 60
+                momento = comienzo
+            eventos.append((orden, dia, "todo el día" if todo_el_dia else f"{comienzo:%H:%M}", titulo, lugar, {
+                "id": str(evento.get("UID") or ""), "titulo": titulo, "inicio": momento.isoformat(),
+                "todo_el_dia": todo_el_dia, "duracion": duracion,
+                "cuando": f"{DIAS[dia.weekday()]} {dia:%d/%m}" + ("" if todo_el_dia else f" a las {comienzo:%H:%M}"),
+            }))
+    _eventos.clear()
     if not eventos:
         return f"No hay eventos entre el {inicio:%d/%m} y el {ultimo - datetime.timedelta(days=1):%d/%m}."
     lineas = []
-    for _, dia, hora, titulo, lugar in sorted(eventos):
+    for numero, (_, dia, hora, titulo, lugar, datos) in enumerate(sorted(eventos, key=lambda e: e[0]), 1):
+        _eventos.append(datos)
         donde = f" en {lugar}" if lugar else ""
-        lineas.append(f"{DIAS[dia.weekday()]} {dia:%d/%m} {hora}: {titulo}{donde}")
+        lineas.append(f"{numero}. {DIAS[dia.weekday()]} {dia:%d/%m} {hora}: {titulo}{donde}")
     return AVISO + "\n".join(lineas)
+
+
+def _script(calendario, datos):
+    """Le pide algo al Apps Script del usuario. Devuelve None si salió bien, o el motivo del fallo."""
+    pedido = urllib.request.Request(
+        calendario["url_script"],
+        data=json.dumps(dict(datos, clave=calendario["clave_script"])).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": "claudio/1.0"},
+    )
+    with urllib.request.urlopen(pedido, timeout=30) as respuesta:
+        texto = respuesta.read().decode("utf-8", "replace")
+    try:
+        resultado = json.loads(texto)
+    except ValueError:
+        return "el script del calendario no respondió como se esperaba; revisa que esté publicado para «Cualquier persona»"
+    if not resultado.get("ok"):
+        error = str(resultado.get("error", "motivo desconocido"))
+        if "faltan datos" in error:
+            error += " (puede que el script publicado sea una versión antigua: vuelve a pegar google_calendario.gs y publica una versión nueva)"
+        return error
+    _ical.clear()  # para que la agenda refleje el cambio de inmediato
+    return None
+
+
+def _evento_numero(argumentos):
+    numero = _entero(argumentos.get("numero"), 0, 0, 99)
+    if not _eventos:
+        return None, "Primero hay que consultar la agenda, para saber de qué cita se trata."
+    if not 1 <= numero <= len(_eventos):
+        return None, f"Ese número no está en la última agenda: hay del 1 al {len(_eventos)}."
+    return _eventos[numero - 1], None
+
+
+def _mover_evento(calendario, argumentos):
+    cita, problema = _evento_numero(argumentos)
+    if problema:
+        return problema
+    nuevo = str(argumentos.get("nuevo_inicio") or "").strip()
+    zona = datetime.datetime.now().astimezone().tzinfo
+    try:
+        if cita["todo_el_dia"]:
+            comienzo = datetime.datetime.combine(datetime.date.fromisoformat(nuevo[:10]), datetime.time(12, 0), zona)
+            termino = comienzo
+        else:
+            if len(nuevo) <= 10:
+                return "Falta la hora: usa AAAA-MM-DDTHH:MM."
+            comienzo = datetime.datetime.fromisoformat(nuevo.replace(" ", "T"))
+            comienzo = comienzo.astimezone(zona) if comienzo.tzinfo else comienzo.replace(tzinfo=zona)
+            termino = comienzo + datetime.timedelta(minutes=cita["duracion"])
+    except ValueError:
+        return "Fecha no válida: usa AAAA-MM-DDTHH:MM, o AAAA-MM-DD para todo el día."
+    problema = _script(calendario, {
+        "accion": "mover", "id": cita["id"], "titulo": cita["titulo"], "inicio": cita["inicio"],
+        "todo_el_dia": cita["todo_el_dia"], "nuevo_inicio": comienzo.isoformat(), "nuevo_fin": termino.isoformat(),
+    })
+    if problema:
+        return f"No pude mover la cita: {problema}."
+    _eventos.clear()
+    cuando = f"{DIAS[comienzo.weekday()]} {comienzo:%d/%m}" + ("" if cita["todo_el_dia"] else f" a las {comienzo:%H:%M}")
+    return f"Cita movida: {cita['titulo']}, ahora {cuando}."
+
+
+def _cancelar_evento(calendario, argumentos):
+    global _por_cancelar
+    cita, problema = _evento_numero(argumentos)
+    if problema:
+        return problema
+    confirmada = (_por_cancelar and _por_cancelar["id"] == cita["id"] and _por_cancelar["inicio"] == cita["inicio"]
+                  and _por_cancelar["turno"] < _turno)
+    if not confirmada:
+        _por_cancelar = {"id": cita["id"], "inicio": cita["inicio"], "turno": _turno}
+        return (f"Pendiente, NO cancelada: {cita['titulo']}, {cita['cuando']}. Dile al usuario cuál es y pregúntale "
+                "si la cancelas. Solo si responde que sí, llama de nuevo a cancelar_evento con el mismo número.")
+    problema = _script(calendario, {
+        "accion": "borrar", "id": cita["id"], "titulo": cita["titulo"], "inicio": cita["inicio"],
+        "todo_el_dia": cita["todo_el_dia"],
+    })
+    _por_cancelar = None
+    if problema:
+        return f"No pude cancelar la cita: {problema}."
+    _eventos.clear()
+    return f"Cita cancelada: {cita['titulo']}, {cita['cuando']}."
 
 
 def _crear_evento(calendario, argumentos):
@@ -426,23 +586,11 @@ def _crear_evento(calendario, argumentos):
             termino = comienzo + datetime.timedelta(minutes=_entero(argumentos.get("duracion_minutos"), 60, 5, 24 * 60))
     except ValueError:
         return "Fecha no válida: usa AAAA-MM-DDTHH:MM, o AAAA-MM-DD para todo el día."
-    pedido = urllib.request.Request(
-        calendario["url_script"],
-        data=json.dumps({
-            "clave": calendario["clave_script"], "accion": "crear", "titulo": titulo,
-            "inicio": comienzo.isoformat(), "fin": termino.isoformat(), "todo_el_dia": todo_el_dia,
-            "lugar": str(argumentos.get("lugar") or ""),
-        }).encode(),
-        headers={"Content-Type": "application/json", "User-Agent": "claudio/1.0"},
-    )
-    with urllib.request.urlopen(pedido, timeout=30) as respuesta:
-        texto = respuesta.read().decode("utf-8", "replace")
-    try:
-        resultado = json.loads(texto)
-    except ValueError:
-        return "El script del calendario no respondió como se esperaba. Revisa que esté publicado para «Cualquier persona»."
-    if not resultado.get("ok"):
-        return f"El calendario rechazó la cita: {resultado.get('error', 'motivo desconocido')}."
-    _ical.clear()  # para que la agenda muestre la cita nueva de inmediato
+    problema = _script(calendario, {
+        "accion": "crear", "titulo": titulo, "inicio": comienzo.isoformat(), "fin": termino.isoformat(),
+        "todo_el_dia": todo_el_dia, "lugar": str(argumentos.get("lugar") or ""),
+    })
+    if problema:
+        return f"El calendario rechazó la cita: {problema}."
     cuando = f"{DIAS[comienzo.weekday()]} {comienzo:%d/%m}" + ("" if todo_el_dia else f" a las {comienzo:%H:%M}")
     return f"Cita creada: {titulo}, {cuando}."
