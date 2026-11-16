@@ -127,10 +127,37 @@ class Interrumpido(Exception):
 ALUCINACIONES = ("subtítulos", "subtitulos", "amara.org", "gracias por ver", "suscríbete")
 
 
+def explicar_error_json(ruta, error):
+    """Dice en castellano qué línea de config.json está mal escrita y cómo arreglarla."""
+    lineas = ruta.read_text(encoding="utf-8").splitlines()
+    anterior = error.lineno - 1
+    while anterior > 1 and not lineas[anterior - 1].strip():
+        anterior -= 1
+    if "Expecting ',' delimiter" in error.msg:
+        pista = f"Falta una coma al final de la línea {anterior}."
+        donde = anterior
+    elif "Expecting property name" in error.msg or "Expecting value" in error.msg:
+        pista = (f"Sobra una coma al final de la línea {anterior}, o falta un valor. "
+                 "El último dato antes de una llave } o un corchete ] no lleva coma.")
+        donde = anterior
+    elif "Invalid control character" in error.msg or "Unterminated string" in error.msg:
+        pista = f"En la línea {error.lineno} falta cerrar unas comillas."
+        donde = error.lineno
+    else:
+        pista = f"Revisa la línea {error.lineno} ({error.msg})."
+        donde = error.lineno
+    return (f"\n{ruta.name} está mal escrito. {pista}\n"
+            f"Ábrelo justo ahí con:   nano +{donde} {ruta.name}\n"
+            "Cada dato termina en coma, salvo el último de su bloque; los textos van entre comillas dobles.")
+
+
 def cargar_config(ruta):
     config = json.loads(json.dumps(POR_DEFECTO))
     if ruta.exists():
-        propia = json.loads(ruta.read_text(encoding="utf-8"))
+        try:
+            propia = json.loads(ruta.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            sys.exit(explicar_error_json(ruta, error))
         for clave, valor in propia.items():
             if isinstance(valor, dict) and isinstance(config.get(clave), dict):
                 config[clave].update(valor)
