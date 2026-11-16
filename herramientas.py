@@ -37,7 +37,8 @@ def _http(url, token_cabecera, cuerpo=None, espera=8):
 # propósito: para abrir una puerta por voz hay que agregarla a mano en config.json.
 DOMINIOS = ("light", "switch", "fan", "cover", "climate", "scene", "script", "media_player",
             "input_boolean", "humidifier", "vacuum", "sensor", "binary_sensor")
-ACCIONES_CASA = ["encender", "apagar", "alternar", "abrir", "cerrar", "brillo", "color", "temperatura", "volumen"]
+ACCIONES_CASA = ["encender", "apagar", "alternar", "abrir", "cerrar", "brillo", "color", "temperatura", "volumen",
+                 "pausar", "reproducir", "silenciar", "quitar_silencio"]
 COLORES = {
     "rojo": "red", "verde": "green", "azul": "blue", "amarillo": "yellow", "naranja": "orange", "rosa": "pink",
     "rosado": "pink", "violeta": "purple", "morado": "purple", "celeste": "cyan", "turquesa": "turquoise",
@@ -88,7 +89,7 @@ def definiciones(config):
             "name": "controlar_casa",
             "description": (
                 "Controla un dispositivo de la casa: luces, enchufes, persianas, aire acondicionado, escenas, "
-                "parlantes. 'valor' se usa con brillo (0 a 100), color (nombre del color, «cálido» o «frío»), "
+                "televisores y parlantes (encender, apagar, volumen, pausar, reproducir, silenciar). 'valor' se usa con brillo (0 a 100), color (nombre del color, «cálido» o «frío»), "
                 "temperatura (grados) y volumen (0 a 100). Para una escena usa encender."
             ),
             "parameters": {"type": "object", "required": ["dispositivo", "accion"], "properties": {
@@ -206,6 +207,10 @@ def _servicio(dominio, accion, valor):
         return dominio, "set_temperature", {"temperature": _numero(valor, 10, 32, "temperatura")}
     if dominio == "media_player" and accion == "volumen":
         return dominio, "volume_set", {"volume_level": _numero(valor, 0, 100, "volumen") / 100}
+    if dominio == "media_player" and accion in ("pausar", "reproducir"):
+        return dominio, {"pausar": "media_pause", "reproducir": "media_play"}[accion], {}
+    if dominio == "media_player" and accion in ("silenciar", "quitar_silencio"):
+        return dominio, "volume_mute", {"is_volume_muted": accion == "silenciar"}
     if dominio == "vacuum":
         return dominio, {"encender": "start", "apagar": "return_to_base"}.get(accion), {}
     if dominio in ("sensor", "binary_sensor"):
@@ -226,7 +231,7 @@ def _controlar_casa(casa, argumentos):
         {"Authorization": f"Bearer {casa['token']}"},
         dict(datos, entity_id="all" if entidad == "light.all" else entidad),
     )
-    detalle = f" a {valor}" if datos else ""
+    detalle = f" a {valor}" if datos and valor not in (None, "") else ""
     return f"Hecho: {accion} {nombre}{detalle}."
 
 
