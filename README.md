@@ -56,10 +56,11 @@ probar tu voz de Kokoro igual, pon `"motor_voz": "kokoro"` y
 
 ## Que se sienta como una charla
 
-- **Frases de relleno.** Cuando va a ejecutar una orden dice algo corto al instante
-  («Enseguida, señor») y luego calla hasta tener el resultado. Si la respuesta se demora
-  más de `relleno_tras` segundos, avisa («Un momento, señor»). El audio de esas frases se
-  genera una vez y queda guardado en `cache_voz/`. Se apagan con `"rellenos": false`.
+- **Frases pregrabadas mientras piensa.** Si la respuesta no está lista en `relleno_tras`
+  segundos (0,4 por defecto), dice algo corto («A ver.», «Déjeme ver.», «Enseguida,
+  señor») para llenar el silencio, sin repetir la anterior. El audio de esas frases se
+  genera una vez y queda guardado en `cache_voz/`, así que suenan al instante. Para que
+  hable menos, sube `relleno_tras`; se apagan con `"rellenos": false`.
 - **Interrumpirlo.** Di «Claudio» mientras habla: se calla y te escucha de inmediato. No
   reacciona a cualquier voz, solo a su nombre, porque sin cancelación de eco se
   interrumpiría con su propio parlante. Se apaga con `"interrumpir": false`.
@@ -68,6 +69,8 @@ probar tu voz de Kokoro igual, pon `"motor_voz": "kokoro"` y
 - **Sin cortes.** El parlante queda abierto todo el tiempo, con un ruido inaudible entre
   frases, porque muchos parlantes USB se comen el primer segundo al despertar. Si aun así
   corta el inicio, sube `"mantener_parlante"` (por ejemplo a 30); con 0 se desactiva.
+  Si con el parlante abierto no se oye nada, `"parlante_abierto": false` vuelve al modo
+  simple, que abre el parlante en cada frase.
 - **De corrido.** Puedes decir «Claudio, prende la luz» sin pausa entre el nombre y la orden.
 
 ## Si tienes una Raspberry Pi 4
@@ -201,8 +204,9 @@ Necesita una *contraseña de aplicación* (distinta de tu contraseña normal, y 
 
 Enviar tiene dos seguros que no dependen de que el modelo se porte bien:
 
-- Solo puede escribir a los `contactos` de esa lista, o responder a un correo que acaba de
-  listar. No puede inventar un destinatario.
+- Puede escribir a cualquiera: si le dices un nombre, lo busca en `contactos` y después en
+  tu propio correo (gente con la que ya te has escrito); también puedes dictarle la
+  dirección. Si prefieres limitarlo a tus contactos, pon `"solo_contactos": true`.
 - Nunca envía en el mismo momento en que redacta: prepara un borrador, te lo lee, y recién
   cuando le respondes puede enviarlo.
 

@@ -6,7 +6,9 @@
 #   Crear citas:          un pequeño Google Apps Script tuyo (google_calendario.gs).
 #
 # Enviar correo tiene dos seguros que no dependen del modelo:
-#   1. Solo se puede escribir a los contactos de config.json o responder a un correo listado.
+#   1. Con "solo_contactos": true, solo escribe a los contactos de config.json o responde a
+#      un correo listado. Por defecto puede escribir a cualquiera: busca la dirección en tu
+#      propio correo por el nombre, o usa la que le dictes.
 #   2. Nada sale en el mismo turno en que se redactó: primero queda un borrador, Claudio lo
 #      lee en voz alta, y recién cuando el usuario vuelve a hablar se puede enviar.
 import datetime
@@ -20,6 +22,7 @@ import json
 import re
 import smtplib
 import time
+import unicodedata
 import urllib.request
 
 _ultimos = []  # la última lista de correos (uid, remitente, asunto…), para "léeme el segundo"
@@ -56,13 +59,15 @@ def definiciones(config):
         lista.append({"type": "function", "function": {
             "name": "redactar_correo",
             "description": (
-                "Prepara un borrador de correo; NO lo envía. Después léele el borrador al usuario y "
-                "pregúntale si lo envías. Usa 'contacto' para escribir a alguien de la agenda"
-                + (f" ({', '.join(contactos)})" if contactos else "")
-                + ", o 'responder_a' con el número de un correo de la última lista."
+                "Prepara un borrador de correo; NO lo envía. Después léele al usuario el destinatario y "
+                "el texto, y pregúntale si lo envías. Para elegir destinatario usa UNO de estos: "
+                "'responder_a' (número de un correo de la última lista), 'contacto' (nombre de la persona: "
+                "se busca en la agenda" + (f" [{', '.join(contactos)}]" if contactos else "")
+                + " y en el correo del usuario) o 'direccion' (una dirección de correo dictada por el usuario)."
             ),
             "parameters": {"type": "object", "required": ["cuerpo"], "properties": {
                 "contacto": {"type": "string"},
+                "direccion": {"type": "string"},
                 "responder_a": {"type": "integer"},
                 "asunto": {"type": "string"},
                 "cuerpo": {"type": "string", "description": "el texto completo, con saludo y despedida"},
@@ -250,18 +255,80 @@ def _redactar(correo, argumentos):
         if not asunto:
             asunto = respuesta["asunto"] if respuesta["asunto"].lower().startswith("re:") else f"Re: {respuesta['asunto']}"
     else:
-        contactos = {nombre.lower(): direccion for nombre, direccion in correo.get("contactos", {}).items()}
-        nombre = str(argumentos.get("contacto") or "").strip().lower()
-        para = contactos.get(nombre)
+        contactos = {_simple(nombre): direccion for nombre, direccion in correo.get("contactos", {}).items()}
+        nombre = str(argumentos.get("contacto") or "").strip()
+        dictada = str(argumentos.get("direccion") or "").strip().lower().replace(" ", "")
+        restringido = bool(correo.get("solo_contactos"))
+        para = contactos.get(_simple(nombre)) if nombre else None
+        if not para and restringido:
+            disponibles = ", ".join(sorted(correo.get("contactos", {}))) or "ninguno"
+            return f"Solo puedo escribir a los contactos guardados ({disponibles}) o responder un correo de la lista."
+        if not para and dictada:
+            para = dictada
+        if not para and nombre:
+            encontrados = _buscar_direcciones(correo, nombre)
+            if len(encontrados) == 1:
+                para = encontrados[0][1]
+            elif encontrados:
+                opciones = "; ".join(f"{quien} <{direccion}>" for quien, direccion in encontrados)
+                return (f"Hay varias direcciones para «{nombre}»: {opciones}. Pregúntale al usuario cuál es "
+                        "y vuelve a llamar con 'direccion'.")
+            else:
+                return (f"No encontré a «{nombre}» en la agenda ni en el correo. Pídele al usuario la dirección "
+                        "y vuelve a llamar con 'direccion'.")
         if not para:
-            disponibles = ", ".join(sorted(contactos)) or "ninguno: hay que agregarlos en config.json, en correo → contactos"
-            return f"No tengo el contacto «{nombre}». Contactos disponibles: {disponibles}."
-    if "@" not in para:
-        return "Ese destinatario no tiene una dirección válida."
+            return "Falta el destinatario: indica 'contacto', 'direccion' o 'responder_a'."
+    if not re.fullmatch(r"[^@\s<>,;]+@[^@\s<>,;]+\.[a-z]{2,}", para):
+        return f"«{para}» no es una dirección de correo válida. Pídele al usuario que la repita."
     _borrador = {"para": para, "asunto": asunto or "(sin asunto)", "cuerpo": cuerpo,
                  "respuesta_a": respuesta["id"] if respuesta else "", "turno": _turno}
     return (f"Borrador listo, NO enviado. Para: {para}. Asunto: {_borrador['asunto']}. Texto: {cuerpo}\n"
             "Léeselo al usuario y pregúntale si lo envías. Solo si responde que sí, usa enviar_borrador.")
+
+
+def _simple(texto):
+    """minúsculas y sin acentos, para comparar nombres"""
+    sin_acentos = unicodedata.normalize("NFD", str(texto).lower())
+    return "".join(c for c in sin_acentos if unicodedata.category(c) != "Mn").strip()
+
+
+def _buscar_direcciones(correo, nombre):
+    """Busca en el correo del usuario a quién corresponde un nombre. Devuelve [(nombre, dirección)],
+    primero las personas con las que más se ha escrito."""
+    palabras = [p for p in re.sub(r"[^\w\s]", " ", _simple(nombre)).split() if p]
+    if not palabras:
+        return []
+    buzon = _conectar(correo)
+    try:
+        # Si existe, se busca en "Todos" (recibidos y enviados); si no, en la bandeja de entrada.
+        try:
+            _, carpetas = buzon.list()
+            for linea in carpetas or []:
+                texto = linea.decode("utf-8", "replace")
+                if "\\All" in texto:
+                    buzon.select(texto.rsplit(' "/" ', 1)[-1], readonly=True)
+                    break
+        except Exception:
+            buzon.select("INBOX", readonly=True)
+        termino = " ".join(palabras)
+        buzon.literal = f"from:({termino}) OR to:({termino})".encode("utf-8")
+        _, datos = buzon.uid("SEARCH", "CHARSET", "UTF-8", "X-GM-RAW")
+        cuenta, nombres = {}, {}
+        for uid in datos[0].split()[-25:]:
+            _, partes = buzon.uid("FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (FROM TO CC)])")
+            mensaje = email.message_from_bytes(partes[0][1])
+            campos = [_cabecera(mensaje[campo]) for campo in ("From", "To", "Cc") if mensaje[campo]]
+            for quien, direccion in email.utils.getaddresses(campos):
+                direccion = direccion.lower()
+                if "@" not in direccion or direccion == correo["usuario"].lower():
+                    continue
+                if all(palabra in _simple(f"{quien} {direccion}") for palabra in palabras):
+                    cuenta[direccion] = cuenta.get(direccion, 0) + 1
+                    nombres.setdefault(direccion, quien or direccion)
+        ordenadas = sorted(cuenta, key=cuenta.get, reverse=True)[:4]
+        return [(nombres[direccion], direccion) for direccion in ordenadas]
+    finally:
+        buzon.logout()
 
 
 def _enviar(correo):

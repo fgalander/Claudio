@@ -22,9 +22,10 @@
   "parlante": null,
   "pitido": true,
   "mantener_parlante": 3,
+  "parlante_abierto": true,
   "seguir_conversando": true,
   "rellenos": true,
-  "relleno_tras": 2.5,
+  "relleno_tras": 0.4,
   "interrumpir": true,
 
   "casa": {

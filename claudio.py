@@ -65,9 +65,10 @@ POR_DEFECTO = {
     "parlante": None,
     "pitido": True,
     "mantener_parlante": 3,
+    "parlante_abierto": True,
     "seguir_conversando": True,
     "rellenos": True,
-    "relleno_tras": 2.5,
+    "relleno_tras": 0.4,
     "interrumpir": True,
     "silencio_fin": 0.8,
     "espera_inicio": 6.0,
@@ -88,16 +89,29 @@ POR_DEFECTO = {
     ),
     "casa": {"url": "", "token": "", "dispositivos": {}},
     "pc": {"url": "", "token": "", "mac": ""},
-    "correo": {"usuario": "", "clave_app": "", "contactos": {}},
+    "correo": {"usuario": "", "clave_app": "", "contactos": {}, "solo_contactos": False},
     "calendario": {"url_ical": "", "url_script": "", "clave_script": ""},
 }
 
 # Frases de relleno: se dicen al instante (el audio queda guardado) para que no haya silencio
 # mientras trabaja. Una sola por turno; después calla hasta tener la respuesta.
-TRABAJANDO = ["Enseguida, señor.", "En ello, señor.", "Un instante.", "Procesando la orden.", "Ahora mismo."]
-ESPERANDO = ["Un momento, señor.", "Permítame un instante.", "Déjeme ver.", "Lo estoy revisando."]
+TRABAJANDO = ["Enseguida, señor.", "En ello, señor.", "Un instante.", "Procesando la orden.", "Ahora mismo.",
+              "Como usted diga.", "Me ocupo de eso."]
+# Estas llenan el silencio mientras piensa: cortas, para no demorar la respuesta de verdad.
+ESPERANDO = ["A ver.", "Veamos.", "Déjeme ver.", "Mmm, un segundo.", "Entendido.", "Muy bien.", "Permítame.",
+             "Lo reviso, señor.", "Buena pregunta.", "Un momento, señor.", "Déjeme pensar.", "Claro, señor."]
 SALUDO = "Todos los sistemas en línea, señor."
 FIJAS = TRABAJANDO + ESPERANDO + [SALUDO]
+
+
+_anterior = {}
+
+
+def elegir(frases):
+    """Una frase al azar, sin repetir la última que se usó de esa lista."""
+    opciones = [f for f in frases if f != _anterior.get(id(frases))] or frases
+    _anterior[id(frases)] = random.choice(opciones)
+    return _anterior[id(frases)]
 
 
 class Interrumpido(Exception):
@@ -211,6 +225,7 @@ class Cerebro:
         self.groq = config["proveedor"] == "groq"
         self.modelo = config["groq"]["modelo"] if self.groq else config["modelo"]
         self.historial = []
+        self.relleno_dicho = False  # lo marca Relleno si ya se dijo una frase en este turno
         self.herramientas = herramientas.definiciones(config)
 
     def _sistema(self):
@@ -329,10 +344,10 @@ class Cerebro:
             self.historial.append(mensaje)
             if not llamadas:
                 return
-            if not dichas and self.config["rellenos"]:
+            if not dichas and not self.relleno_dicho and self.config["rellenos"]:
                 dichas += 1
                 try:
-                    al_hablar(random.choice(TRABAJANDO))
+                    al_hablar(elegir(TRABAJANDO))
                 except Interrumpido:
                     self.historial[-1] = {"role": "assistant", "content": "…"}  # sin herramientas a medias
                     raise
@@ -373,7 +388,7 @@ class Audio:
         self.frecuencia_mic = FRECUENCIA
 
         # El parlante se abre una sola vez y queda abierto (ver voces.Salida).
-        self.salida = voces.Salida(self.parlante, config["mantener_parlante"])
+        self.salida = voces.abrir_salida(self.parlante, config["parlante_abierto"], config["mantener_parlante"])
         print(f"Cargando voz ({config['motor_voz']}: {config['voz']})…")
         try:
             self.voz = voces.crear_voz(config)
@@ -456,10 +471,9 @@ class Audio:
                 if not avisado:
                     print("Preparando frases rápidas (solo la primera vez)…")
                     avisado = True
-                trozos = list(self.voz.sintetizar(texto))
-                muestras = self.np.concatenate([m for m, _ in trozos])
-                self.np.savez(archivo, muestras=muestras, frecuencia=trozos[0][1])
-                self.guardadas[texto] = (muestras, trozos[0][1])
+                muestras, frecuencia = voces.unir(self.voz.sintetizar(texto))
+                self.np.savez(archivo, muestras=muestras, frecuencia=frecuencia)
+                self.guardadas[texto] = (muestras, frecuencia)
             except Exception as error:
                 print(f"  ⚠ no pude preparar «{texto}»: {error}")
 
@@ -531,6 +545,13 @@ class Audio:
 
     def decir(self, texto):
         """Habla. Si mientras tanto oye la palabra de activación, se calla y lanza Interrumpido."""
+        # El audio se genera antes de pedir turno: así una frase de relleno puede sonar
+        # mientras se prepara la respuesta de verdad.
+        try:
+            muestras, frecuencia = self.guardadas[texto] if texto in self.guardadas else voces.unir(self.voz.sintetizar(texto))
+        except Exception as error:
+            print(f"🔊 {texto}\n   ✖ voz: {error}")
+            return
         with self.candado:
             if self.interrumpido:
                 raise Interrumpido()
@@ -538,9 +559,7 @@ class Audio:
             detector = self.nuevo_detector() if self.config["interrumpir"] and self.con_microfono else None
             self._vaciar()
             try:
-                trozos = [self.guardadas[texto]] if texto in self.guardadas else self.voz.sintetizar(texto)
-                for muestras, frecuencia in trozos:
-                    self.salida.reproducir(muestras, frecuencia)
+                self.salida.reproducir(muestras, frecuencia)
                 while self.salida.segundos() > 0:
                     if not self.con_microfono:
                         time.sleep(0.05)
@@ -590,6 +609,44 @@ def avisar_error(error, decir):
     print(f"   ✖ {error}")
 
 
+class Relleno:
+    """Un turno de conversación: si la respuesta no llega enseguida, dice una frase pregrabada
+    para llenar el silencio. También mide cuánto tardó en empezar a responder."""
+
+    def __init__(self, audio, cerebro, config):
+        self.audio, self.cerebro = audio, cerebro
+        self.inicio, self.respondio, self.candado = time.time(), False, threading.Lock()
+        cerebro.relleno_dicho = False
+        self.reloj = threading.Timer(float(config["relleno_tras"]), self._sonar)
+        self.reloj.daemon = True
+        if config["rellenos"]:
+            self.reloj.start()
+
+    def _sonar(self):  # corre en otro hilo
+        with self.candado:
+            if self.respondio:
+                return
+            self.cerebro.relleno_dicho = True
+        try:
+            self.audio.decir(elegir(ESPERANDO))
+        except Interrumpido:
+            pass  # queda anotado en audio.interrumpido
+
+    def decir(self, frase):
+        """Para pasarle al cerebro: la primera frase real cancela el relleno."""
+        with self.candado:
+            primera, self.respondio = not self.respondio, True
+        self.reloj.cancel()
+        if primera:
+            print(f"   ⏱ respuesta lista en {time.time() - self.inicio:.1f} s")
+        self.audio.decir(frase)
+
+    def cerrar(self):
+        with self.candado:
+            self.respondio = True
+        self.reloj.cancel()
+
+
 def modo_texto(config, hablar=False):
     audio = Audio(config, con_microfono=False) if hablar else None
     cerebro = Cerebro(config)
@@ -602,22 +659,18 @@ def modo_texto(config, hablar=False):
             return
         if not texto:
             continue
-        decir = audio.decir if hablar else lambda frase: print(f"{config['nombre'].lower()} > {frase}")
-        inicio, primera = time.time(), []
-        if hablar:  # muestra cuánto tarda en empezar a sonar la respuesta
-            def decir(frase):
-                if not primera:
-                    primera.append(time.time() - inicio)
-                    print(f"   ⏱ pensar {primera[0]:.1f} s")
-                comienzo = time.time()
-                audio.decir(frase)
-                if len(primera) == 1:
-                    primera.append(0)
-                    print(f"   ⏱ esa frase, entre generarla y decirla: {time.time() - comienzo:.1f} s")
+        turno = Relleno(audio, cerebro, config) if hablar else None
+        decir = turno.decir if hablar else lambda frase: print(f"{config['nombre'].lower()} > {frase}")
         try:
             cerebro.responder(texto, decir)
         except Exception as error:
-            avisar_error(error, decir)
+            if turno:
+                turno.cerrar()
+            avisar_error(error, audio.decir if hablar else decir)
+        if turno:
+            turno.cerrar()
+            if getattr(audio.salida, "error", None):
+                print(f"   ✖ el parlante falló: {audio.salida.error}")
 
 
 def modo_voz(config):
@@ -640,48 +693,25 @@ def modo_voz(config):
             grabacion = audio.grabar_frase()
             if grabacion is None:
                 break
-            inicio = time.time()
-            primera = []  # cuánto tardó en empezar a hablar
-            oido = [0.0]
-
-            def relleno():  # corre en otro hilo si la respuesta se demora
-                if primera:
-                    return
-                primera.append(time.time() - inicio)
-                try:
-                    audio.decir(random.choice(ESPERANDO))
-                except Interrumpido:
-                    pass  # queda anotado en audio.interrumpido
-
-            reloj = threading.Timer(float(config["relleno_tras"]), relleno)
-            reloj.daemon = True
-            if config["rellenos"]:
-                reloj.start()
-
-            def decir(frase):
-                reloj.cancel()
-                if not primera:
-                    primera.append(time.time() - inicio)
-                    print(f"   ⏱ entender {oido[0]:.1f} s · pensar {primera[0] - oido[0]:.1f} s (la voz se suma después)")
-                audio.decir(frase)
-
+            inicio, turno = time.time(), None
             try:
                 texto = audio.transcribir(grabacion)
                 if not texto:
-                    reloj.cancel()
                     break
-                oido[0] = time.time() - inicio
-                print(f"🗣  {texto}")
-                cerebro.responder(texto, decir)
+                print(f"🗣  {texto}   (entender: {time.time() - inicio:.1f} s)")
+                turno = Relleno(audio, cerebro, config)  # recién ahora: no se rellena ante un ruido
+                cerebro.responder(texto, turno.decir)
             except Interrumpido:
                 pass
             except Exception as error:
-                reloj.cancel()
+                if turno:
+                    turno.cerrar()
                 try:
                     avisar_error(error, audio.decir)
                 except Interrumpido:
                     pass
-            reloj.cancel()
+            if turno:
+                turno.cerrar()
             if audio.interrumpido:  # dijeron «Claudio» mientras hablaba: a escuchar de inmediato
                 print("✋ interrumpido")
                 despierto = True

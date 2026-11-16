@@ -77,6 +77,7 @@ def main():
     opciones.add_argument("--tono", type=float, default=0, help="semitonos: negativo más grave (piper lo ignora)")
     opciones.add_argument("--efecto", type=float, default=0, help="0 a 1: resonancia de computadora de a bordo")
     opciones.add_argument("--frase", default=FRASE)
+    opciones.add_argument("--simple", action="store_true", help="abrir el parlante en cada frase (modo de respaldo)")
     opciones.add_argument("--parlante", type=int, help="número del dispositivo (ver claudio.py --audio)")
     args = opciones.parse_args()
 
@@ -113,11 +114,13 @@ def main():
             print(f"  guardada en {destino}")
         else:
             if salida is None:
-                salida = voces.Salida(voces.elegir_dispositivo(args.parlante, salida=True))
+                salida = voces.abrir_salida(voces.elegir_dispositivo(args.parlante, salida=True), not args.simple)
+                print(f"  (parlante en modo {'abierto' if isinstance(salida, voces.Salida) else 'simple'})")
                 time.sleep(1.0)  # deja que el parlante despierte antes de la primera frase
-            for muestras, frecuencia in trozos:
-                salida.reproducir(muestras, frecuencia)
+            salida.reproducir(*voces.unir(trozos))
             salida.esperar()
+            if getattr(salida, "error", None):
+                print(f"  ✖ el parlante falló: {salida.error}")
 
 
 if __name__ == "__main__":

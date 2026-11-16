@@ -164,13 +164,32 @@ class Salida:
         self.canales = 2 if int(datos["max_output_channels"]) >= 2 else 1
         self.pendiente = numpy.zeros(0, dtype=numpy.int16)
         self.candado = threading.Lock()
+        self.llamadas, self.error = 0, None
         self.flujo = sounddevice.OutputStream(
             samplerate=self.frecuencia, channels=self.canales, dtype="int16",
             device=dispositivo, callback=self._llenar,
         )
         self.flujo.start()
+        import time
+        limite = time.time() + 1.5
+        while self.llamadas == 0 and time.time() < limite:
+            time.sleep(0.05)
+        if self.llamadas == 0 or self.error:
+            try:
+                self.flujo.close()
+            except Exception:
+                pass
+            raise RuntimeError(self.error or "el parlante no pidió audio")
 
     def _llenar(self, salida, cuadros, tiempo, estado):
+        self.llamadas += 1
+        try:
+            self._llenar_bloque(salida, cuadros)
+        except Exception as error:  # que un fallo aquí no quede mudo y sin explicación
+            self.error = self.error or f"{type(error).__name__}: {error}"
+            salida[:] = 0
+
+    def _llenar_bloque(self, salida, cuadros):
         with self.candado:
             trozo, self.pendiente = self.pendiente[:cuadros], self.pendiente[cuadros:]
         if self.mantener:
@@ -198,6 +217,64 @@ class Salida:
         while self.segundos() > 0:
             time.sleep(0.05)
         time.sleep(0.15)
+
+
+class SalidaSimple:
+    """Respaldo: abre el parlante en cada frase. Antepone medio segundo casi mudo, porque
+    los parlantes USB que se duermen se comen el comienzo."""
+
+    def __init__(self, dispositivo, entrada=0.6):
+        import numpy
+        import sounddevice
+        self.np, self.sd, self.dispositivo, self.entrada = numpy, sounddevice, dispositivo, entrada
+        datos = sounddevice.query_devices(dispositivo if dispositivo is not None else sounddevice.default.device[1])
+        self.frecuencia = int(datos["default_samplerate"])
+        self.canales = 2 if int(datos["max_output_channels"]) >= 2 else 1
+        self.fin = 0.0
+
+    def reproducir(self, muestras, frecuencia):
+        import time
+        muestras = cambiar_frecuencia(self.np.asarray(muestras, dtype=self.np.int16), frecuencia, self.frecuencia)
+        antes = self.np.random.randint(-3, 4, int(self.frecuencia * self.entrada)).astype(self.np.int16)
+        completo = self.np.concatenate([antes, muestras])
+        if self.canales == 2:
+            completo = self.np.column_stack([completo, completo])
+        self.sd.play(completo, self.frecuencia, device=self.dispositivo)
+        self.fin = time.time() + len(completo) / self.frecuencia
+
+    def segundos(self):
+        import time
+        return max(0.0, self.fin - time.time())
+
+    def detener(self):
+        self.sd.stop()
+        self.fin = 0.0
+
+    def esperar(self):
+        import time
+        while self.segundos() > 0:
+            time.sleep(0.05)
+        time.sleep(0.15)
+
+
+def abrir_salida(dispositivo, abierto=True, mantener=3):
+    """El parlante siempre abierto si se puede; si no responde, el modo simple."""
+    if abierto:
+        try:
+            return Salida(dispositivo, mantener)
+        except Exception as error:
+            print(f"  ⚠ no pude dejar el parlante abierto ({error}); uso el modo simple")
+    return SalidaSimple(dispositivo)
+
+
+def unir(trozos):
+    """Junta los trozos de una frase en un solo audio (todos a la frecuencia del primero)."""
+    import numpy
+    trozos = list(trozos)
+    if not trozos:
+        return numpy.zeros(0, dtype=numpy.int16), 24000
+    frecuencia = trozos[0][1]
+    return numpy.concatenate([cambiar_frecuencia(m, f, frecuencia) for m, f in trozos]), frecuencia
 
 
 def crear_voz(config):
