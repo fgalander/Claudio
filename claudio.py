@@ -663,12 +663,13 @@ def main():
         import sounddevice
         print(sounddevice.query_devices())
         config = cargar_config(Path(args.config))
-        for nombre, salida in (("micrófono", False), ("parlante", True)):
-            numero = voces.elegir_dispositivo(config[nombre], salida)
-            canales = "max_output_channels" if salida else "max_input_channels"
+        for nombre, clave, salida in (("micrófono", "microfono", False), ("parlante", "parlante", True)):
+            numero = voces.elegir_dispositivo(config[clave], salida)
             if numero is None:
                 try:
                     numero = sounddevice.default.device[1 if salida else 0]
+                    if numero is None or numero < 0:
+                        raise ValueError("sin dispositivo")
                     detalle = sounddevice.query_devices(numero)["name"] + " (el del sistema)"
                 except Exception:
                     detalle = "NINGUNO: no hay un dispositivo de este tipo"
