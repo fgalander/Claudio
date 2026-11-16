@@ -113,6 +113,7 @@ def main():
             import sounddevice
             parlante = voces.elegir_dispositivo(args.parlante, salida=True)
             for muestras, frecuencia in trozos:
+                muestras, frecuencia = voces.para_parlante(muestras, frecuencia, parlante)
                 sounddevice.play(muestras, frecuencia, device=parlante, blocking=True)
 
 

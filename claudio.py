@@ -401,8 +401,17 @@ class Audio:
         except Exception as error:
             sys.exit(f"No pude cargar la voz: {error}")
 
+        # Vosk y Whisper quieren 16000 Hz. Si el micrófono no lo admite (pasa con varios USB),
+        # se graba a la frecuencia propia del micrófono y cada bloque se convierte.
+        self.frecuencia_mic = FRECUENCIA
+        try:
+            sounddevice.check_input_settings(device=self.microfono, channels=1, dtype="int16", samplerate=FRECUENCIA)
+        except Exception:
+            entrada = self.microfono if self.microfono is not None else sounddevice.default.device[0]
+            self.frecuencia_mic = int(sounddevice.query_devices(entrada)["default_samplerate"])
+            print(f"El micrófono no admite {FRECUENCIA} Hz: grabo a {self.frecuencia_mic} Hz y convierto.")
         self.entrada = sounddevice.RawInputStream(
-            samplerate=FRECUENCIA, blocksize=BLOQUE, channels=1, dtype="int16",
+            samplerate=self.frecuencia_mic, blocksize=self.frecuencia_mic // 10, channels=1, dtype="int16",
             device=self.microfono, callback=self._llega_audio,
         )
         self.entrada.start()
@@ -410,7 +419,11 @@ class Audio:
             self._preparar_fijas()
 
     def _llega_audio(self, datos, cuadros, tiempo, estado):
-        self.cola.put(bytes(datos))
+        bloque = bytes(datos)
+        if self.frecuencia_mic != FRECUENCIA:
+            muestras = self.np.frombuffer(bloque, dtype=self.np.int16)
+            bloque = voces.cambiar_frecuencia(muestras, self.frecuencia_mic, FRECUENCIA).tobytes()
+        self.cola.put(bloque)
 
     def _preparar_fijas(self):
         """Genera una vez el audio de las frases fijas y lo guarda en disco: después salen al instante."""
@@ -513,6 +526,7 @@ class Audio:
             try:
                 trozos = [self.guardadas[texto]] if texto in self.guardadas else self.voz.sintetizar(texto)
                 for muestras, frecuencia in trozos:
+                    muestras, frecuencia = voces.para_parlante(muestras, frecuencia, self.parlante)
                     self.sd.play(muestras, frecuencia, device=self.parlante)
                     fin = time.time() + len(muestras) / frecuencia + 0.1
                     while time.time() < fin:
@@ -537,7 +551,8 @@ class Audio:
             return
         t = self.np.arange(int(22050 * 0.12)) / 22050
         onda = (self.np.sin(2 * math.pi * tono * t) * 0.25 * 32767).astype(self.np.int16)
-        self.sd.play(onda, 22050, device=self.parlante)
+        onda, frecuencia = voces.para_parlante(onda, 22050, self.parlante)
+        self.sd.play(onda, frecuencia, device=self.parlante)
 
 
 # ───────────────────────── Modos ─────────────────────────

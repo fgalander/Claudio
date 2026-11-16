@@ -139,6 +139,32 @@ def elegir_dispositivo(configurado, salida=True):
     return None
 
 
+def cambiar_frecuencia(muestras, origen, destino):
+    """Convierte audio int16 de una frecuencia de muestreo a otra (interpolación lineal)."""
+    import numpy
+    if origen == destino or len(muestras) == 0:
+        return muestras
+    largo = max(1, int(round(len(muestras) * destino / origen)))
+    posiciones = numpy.linspace(0, len(muestras) - 1, largo)
+    return numpy.interp(posiciones, numpy.arange(len(muestras)), muestras).astype(numpy.int16)
+
+
+def para_parlante(muestras, frecuencia, dispositivo):
+    """Adapta el audio a lo que el parlante acepta. Muchos parlantes USB solo admiten
+    44100 o 48000 Hz en estéreo, y las voces salen a 22050 o 24000 Hz en mono."""
+    import numpy
+    import sounddevice
+    try:
+        datos = sounddevice.query_devices(dispositivo if dispositivo is not None else sounddevice.default.device[1])
+        destino, canales = int(datos["default_samplerate"]), int(datos["max_output_channels"])
+    except Exception:
+        return muestras, frecuencia
+    muestras = cambiar_frecuencia(muestras, frecuencia, destino)
+    if canales >= 2 and muestras.ndim == 1:
+        muestras = numpy.column_stack([muestras, muestras])
+    return muestras, destino
+
+
 def crear_voz(config):
     motor = config.get("motor_voz", "kokoro")
     voz, velocidad = config.get("voz"), float(config.get("velocidad_voz", 1.0))
