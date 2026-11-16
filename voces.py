@@ -123,6 +123,22 @@ class ConEfecto:
             yield self.np.clip(salida, -32768, 32767).astype(self.np.int16), frecuencia
 
 
+def elegir_dispositivo(configurado, salida=True):
+    """Qué parlante (o micrófono) usar: el de config.json; si no hay, el primero por USB;
+    y si tampoco, el que el sistema tenga por defecto (None)."""
+    if configurado is not None:
+        return configurado
+    try:
+        import sounddevice
+        for numero, dispositivo in enumerate(sounddevice.query_devices()):
+            canales = dispositivo["max_output_channels" if salida else "max_input_channels"]
+            if canales > 0 and "usb" in dispositivo["name"].lower():
+                return numero
+    except Exception:
+        pass
+    return None
+
+
 def crear_voz(config):
     motor = config.get("motor_voz", "kokoro")
     voz, velocidad = config.get("voz"), float(config.get("velocidad_voz", 1.0))

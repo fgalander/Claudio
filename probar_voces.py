@@ -76,6 +76,7 @@ def main():
     opciones.add_argument("--tono", type=float, default=0, help="semitonos: negativo más grave (piper lo ignora)")
     opciones.add_argument("--efecto", type=float, default=0, help="0 a 1: resonancia de computadora de a bordo")
     opciones.add_argument("--frase", default=FRASE)
+    opciones.add_argument("--parlante", type=int, help="número del dispositivo (ver claudio.py --audio)")
     args = opciones.parse_args()
 
     lista = [(args.voz, "")] if args.voz else CATALOGO[args.motor]
@@ -110,8 +111,9 @@ def main():
             print(f"  guardada en {destino}")
         else:
             import sounddevice
+            parlante = voces.elegir_dispositivo(args.parlante, salida=True)
             for muestras, frecuencia in trozos:
-                sounddevice.play(muestras, frecuencia, blocking=True)
+                sounddevice.play(muestras, frecuencia, device=parlante, blocking=True)
 
 
 if __name__ == "__main__":

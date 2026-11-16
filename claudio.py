@@ -354,6 +354,11 @@ class Audio:
         from vosk import KaldiRecognizer, Model, SetLogLevel
 
         self.np, self.sd, self.config = numpy, sounddevice, config
+        self.parlante = voces.elegir_dispositivo(config["parlante"], salida=True)
+        self.microfono = voces.elegir_dispositivo(config["microfono"], salida=False)
+        for nombre, numero in (("Micrófono", self.microfono), ("Parlante", self.parlante)):
+            detalle = "el del sistema" if numero is None else sounddevice.query_devices(numero)["name"]
+            print(f"{nombre}: {detalle}")
         self.cola = queue.Queue()
         self.candado = threading.Lock()  # una sola voz a la vez (el relleno sale de otro hilo)
         self.interrumpido = False
@@ -398,7 +403,7 @@ class Audio:
 
         self.entrada = sounddevice.RawInputStream(
             samplerate=FRECUENCIA, blocksize=BLOQUE, channels=1, dtype="int16",
-            device=config["microfono"], callback=self._llega_audio,
+            device=self.microfono, callback=self._llega_audio,
         )
         self.entrada.start()
         if config["rellenos"]:
@@ -508,7 +513,7 @@ class Audio:
             try:
                 trozos = [self.guardadas[texto]] if texto in self.guardadas else self.voz.sintetizar(texto)
                 for muestras, frecuencia in trozos:
-                    self.sd.play(muestras, frecuencia, device=self.config["parlante"])
+                    self.sd.play(muestras, frecuencia, device=self.parlante)
                     fin = time.time() + len(muestras) / frecuencia + 0.1
                     while time.time() < fin:
                         try:
@@ -532,7 +537,7 @@ class Audio:
             return
         t = self.np.arange(int(22050 * 0.12)) / 22050
         onda = (self.np.sin(2 * math.pi * tono * t) * 0.25 * 32767).astype(self.np.int16)
-        self.sd.play(onda, 22050, device=self.config["parlante"])
+        self.sd.play(onda, 22050, device=self.parlante)
 
 
 # ───────────────────────── Modos ─────────────────────────
@@ -657,6 +662,20 @@ def main():
     if args.audio:
         import sounddevice
         print(sounddevice.query_devices())
+        config = cargar_config(Path(args.config))
+        for nombre, salida in (("micrófono", False), ("parlante", True)):
+            numero = voces.elegir_dispositivo(config[nombre], salida)
+            canales = "max_output_channels" if salida else "max_input_channels"
+            if numero is None:
+                try:
+                    numero = sounddevice.default.device[1 if salida else 0]
+                    detalle = sounddevice.query_devices(numero)["name"] + " (el del sistema)"
+                except Exception:
+                    detalle = "NINGUNO: no hay un dispositivo de este tipo"
+            else:
+                detalle = sounddevice.query_devices(numero)["name"]
+            print(f"\nClaudio usará como {nombre}: {detalle}")
+        print('\nPara forzar otro, pon su número en config.json: "microfono": 2, "parlante": 1')
         return
     config = cargar_config(Path(args.config))
     if args.modelos:
