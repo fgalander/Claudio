@@ -13,6 +13,7 @@
 # Uso:
 #   python claudio.py            modo voz (di "Claudio" y habla)
 #   python claudio.py --texto    modo teclado, para probar sin micrófono ni parlante
+#   python claudio.py --hablar   tú escribes y él responde por el parlante (sin micrófono)
 #   python claudio.py --audio    lista los micrófonos y parlantes que ve el sistema
 #   python claudio.py --modelos  lista los modelos que ofrece Groq con tu clave
 import argparse
@@ -348,15 +349,17 @@ class Cerebro:
 
 # ───────────────────────── Oído y boca ─────────────────────────
 class Audio:
-    def __init__(self, config):
+    def __init__(self, config, con_microfono=True):
+        """con_microfono=False deja solo la boca: sirve para escribirle y oír la respuesta."""
         import numpy
         import sounddevice
-        from vosk import KaldiRecognizer, Model, SetLogLevel
 
         self.np, self.sd, self.config = numpy, sounddevice, config
+        self.con_microfono = con_microfono
         self.parlante = voces.elegir_dispositivo(config["parlante"], salida=True)
         self.microfono = voces.elegir_dispositivo(config["microfono"], salida=False)
-        for nombre, numero in (("Micrófono", self.microfono), ("Parlante", self.parlante)):
+        usados = [("Parlante", self.parlante)] + ([("Micrófono", self.microfono)] if con_microfono else [])
+        for nombre, numero in usados:
             detalle = "el del sistema" if numero is None else sounddevice.query_devices(numero)["name"]
             print(f"{nombre}: {detalle}")
         self.cola = queue.Queue()
@@ -364,7 +367,22 @@ class Audio:
         self.interrumpido = False
         self.guardadas = {}  # audio ya generado de las frases fijas
         self.ruido = float(config["umbral_minimo"]) / 3
+        self.frecuencia_mic = FRECUENCIA
 
+        print(f"Cargando voz ({config['motor_voz']}: {config['voz']})…")
+        try:
+            self.voz = voces.crear_voz(config)
+        except Exception as error:
+            sys.exit(f"No pude cargar la voz: {error}")
+        if config["rellenos"]:
+            self._preparar_fijas()
+        if con_microfono:
+            self._preparar_oido()
+
+    def _preparar_oido(self):
+        from vosk import KaldiRecognizer, Model, SetLogLevel
+
+        config, sounddevice = self.config, self.sd
         SetLogLevel(-1)
         carpeta_vosk = ruta_local(config["modelo_vosk"])
         if not carpeta_vosk.exists():
@@ -395,15 +413,8 @@ class Audio:
             print(f"Cargando transcripción (Whisper {config['whisper']})…")
             self.whisper = WhisperModel(config["whisper"], device="cpu", compute_type="int8")
 
-        print(f"Cargando voz ({config['motor_voz']}: {config['voz']})…")
-        try:
-            self.voz = voces.crear_voz(config)
-        except Exception as error:
-            sys.exit(f"No pude cargar la voz: {error}")
-
         # Vosk y Whisper quieren 16000 Hz. Si el micrófono no lo admite (pasa con varios USB),
         # se graba a la frecuencia propia del micrófono y cada bloque se convierte.
-        self.frecuencia_mic = FRECUENCIA
         try:
             sounddevice.check_input_settings(device=self.microfono, channels=1, dtype="int16", samplerate=FRECUENCIA)
         except Exception:
@@ -415,8 +426,6 @@ class Audio:
             device=self.microfono, callback=self._llega_audio,
         )
         self.entrada.start()
-        if config["rellenos"]:
-            self._preparar_fijas()
 
     def _llega_audio(self, datos, cuadros, tiempo, estado):
         bloque = bytes(datos)
@@ -521,7 +530,7 @@ class Audio:
             if self.interrumpido:
                 raise Interrumpido()
             print(f"🔊 {texto}")
-            detector = self.nuevo_detector() if self.config["interrumpir"] else None
+            detector = self.nuevo_detector() if self.config["interrumpir"] and self.con_microfono else None
             self._vaciar()
             try:
                 trozos = [self.guardadas[texto]] if texto in self.guardadas else self.voz.sintetizar(texto)
@@ -530,6 +539,9 @@ class Audio:
                     self.sd.play(muestras, frecuencia, device=self.parlante)
                     fin = time.time() + len(muestras) / frecuencia + 0.1
                     while time.time() < fin:
+                        if not self.con_microfono:
+                            time.sleep(0.05)
+                            continue
                         try:
                             bloque = self.cola.get(timeout=0.05)
                         except queue.Empty:
@@ -576,7 +588,8 @@ def avisar_error(error, decir):
     print(f"   ✖ {error}")
 
 
-def modo_texto(config):
+def modo_texto(config, hablar=False):
+    audio = Audio(config, con_microfono=False) if hablar else None
     cerebro = Cerebro(config)
     print(f"{config['nombre']} en modo texto ({config['proveedor']}: {cerebro.modelo}). Ctrl+C para salir.")
     while True:
@@ -587,7 +600,18 @@ def modo_texto(config):
             return
         if not texto:
             continue
-        decir = lambda frase: print(f"{config['nombre'].lower()} > {frase}")
+        decir = audio.decir if hablar else lambda frase: print(f"{config['nombre'].lower()} > {frase}")
+        inicio, primera = time.time(), []
+        if hablar:  # muestra cuánto tarda en empezar a sonar la respuesta
+            def decir(frase):
+                if not primera:
+                    primera.append(time.time() - inicio)
+                    print(f"   ⏱ pensar {primera[0]:.1f} s")
+                comienzo = time.time()
+                audio.decir(frase)
+                if len(primera) == 1:
+                    primera.append(0)
+                    print(f"   ⏱ esa frase, entre generarla y decirla: {time.time() - comienzo:.1f} s")
         try:
             cerebro.responder(texto, decir)
         except Exception as error:
@@ -670,6 +694,7 @@ def modo_voz(config):
 def main():
     opciones = argparse.ArgumentParser(description="Claudio, asistente de voz local")
     opciones.add_argument("--texto", action="store_true", help="conversar por teclado")
+    opciones.add_argument("--hablar", action="store_true", help="con --texto: tú escribes y él responde por el parlante")
     opciones.add_argument("--audio", action="store_true", help="listar micrófonos y parlantes")
     opciones.add_argument("--modelos", action="store_true", help="listar los modelos de Groq")
     opciones.add_argument("--config", default=str(AQUI / "config.json"))
@@ -699,7 +724,7 @@ def main():
         print('\nPon el elegido en config.json, en groq → modelo (para el oído, uno "whisper").')
         return
     try:
-        modo_texto(config) if args.texto else modo_voz(config)
+        modo_texto(config, args.hablar) if args.texto or args.hablar else modo_voz(config)
     except KeyboardInterrupt:
         print("\nHasta luego.")
 
