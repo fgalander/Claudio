@@ -5,3 +5,5 @@ piper-tts
 edge-tts
 sounddevice
 numpy
+icalendar
+recurring-ical-events

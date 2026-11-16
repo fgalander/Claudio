@@ -1,9 +1,12 @@
-# CLAUDIO · Herramientas que el modelo puede usar: domótica (Home Assistant) y el PC.
+# CLAUDIO · Herramientas que el modelo puede usar: domótica (Home Assistant), el PC,
+# y correo y calendario (en correo_agenda.py).
 # Solo se le ofrecen al modelo las que están configuradas en config.json.
 import json
 import socket
 import urllib.error
 import urllib.request
+
+import correo_agenda
 
 ACCIONES_PC = [
     "abrir_app", "abrir_web", "buscar_web", "subir_volumen", "bajar_volumen", "silenciar",
@@ -64,7 +67,7 @@ def definiciones(config):
             "description": "Enciende el computador del usuario por la red (Wake-on-LAN).",
             "parameters": {"type": "object", "properties": {}},
         }})
-    return lista
+    return lista + correo_agenda.definiciones(config)
 
 
 def ejecutar(config, nombre, argumentos):
@@ -78,7 +81,8 @@ def ejecutar(config, nombre, argumentos):
             return _controlar_pc(config["pc"], argumentos)
         if nombre == "encender_pc":
             return _encender_pc(config["pc"])
-        return f"Error: la herramienta {nombre} no existe."
+        resultado = correo_agenda.ejecutar(config, nombre, argumentos)
+        return resultado if resultado is not None else f"Error: la herramienta {nombre} no existe."
     except urllib.error.HTTPError as error:
         detalle = error.read().decode("utf-8", "replace")[:200]
         return f"Error {error.code}: {detalle}"

@@ -172,6 +172,42 @@ acceso de larga duración* → crear uno. Luego, en `config.json`:
 A la izquierda va el nombre con que tú lo dices; a la derecha, el `entity_id` de Home
 Assistant. Claudio solo puede tocar lo que esté en esa lista.
 
+## Gmail y Google Calendar
+
+Claudio puede decirte qué correos tienes sin leer, leerte uno y contarte tu agenda. Es
+**solo lectura**: no puede enviar correos ni crear eventos. No hace falta crear un proyecto
+en Google Cloud.
+
+**Correo.** Necesita una *contraseña de aplicación* (distinta de tu contraseña normal, y
+que puedes revocar cuando quieras):
+
+1. Activa la verificación en dos pasos en <https://myaccount.google.com/security>.
+2. Crea la contraseña en <https://myaccount.google.com/apppasswords> (nombre: Claudio).
+   Google muestra 16 letras.
+3. En `config.json`:
+
+   ```json
+   "correo": { "usuario": "tucuenta@gmail.com", "clave_app": "abcd efgh ijkl mnop" }
+   ```
+
+**Calendario.** En <https://calendar.google.com>: rueda de ajustes → elige tu calendario a
+la izquierda → *Integrar el calendario* → copia la **dirección secreta en formato iCal**.
+
+```json
+"calendario": { "url_ical": "https://calendar.google.com/calendar/ical/.../basic.ics" }
+```
+
+Para varios calendarios, pon una lista: `"url_ical": ["https://...", "https://..."]`.
+
+Después instala las dos librerías nuevas con `./venv/bin/pip install -r requirements.txt`.
+
+Ten presente: esa contraseña y esa dirección dan acceso de lectura a tu correo y agenda,
+así que cuida `config.json`. Y en modo Groq, el texto de los correos y eventos que Claudio
+consulta se envía a Groq para poder resumirlo.
+
+Ejemplos: «¿tengo correos nuevos?», «léeme el segundo», «¿hay algo de mi banco?»,
+«¿qué tengo mañana?», «¿cómo viene la semana?».
+
 ## Controlar el PC
 
 1. Copia `agente_pc.py` a tu computador y córrelo (solo necesita Python 3):

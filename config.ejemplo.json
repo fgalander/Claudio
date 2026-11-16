@@ -36,6 +36,15 @@
     }
   },
 
+  "correo": {
+    "usuario": "",
+    "clave_app": ""
+  },
+
+  "calendario": {
+    "url_ical": ""
+  },
+
   "pc": {
     "url": "",
     "token": "",
