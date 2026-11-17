@@ -16,6 +16,7 @@
 #   python claudio.py --hablar   tú escribes y él responde por el parlante (sin micrófono)
 #   python claudio.py --audio    lista los micrófonos y parlantes que ve el sistema
 #   python claudio.py --modelos  lista los modelos que ofrece Groq con tu clave
+#   python claudio.py --oido     prueba el micrófono: volumen y lo que entiende
 #   python claudio.py --casa     comprueba la conexión con Home Assistant y lista los dispositivos
 import argparse
 import datetime
@@ -423,7 +424,7 @@ class Audio:
         self.interrumpido = False
         self.guardadas = {}  # audio ya generado de las frases fijas
         self.ruido = float(config["umbral_minimo"]) / 3
-        self.frecuencia_mic = FRECUENCIA
+        self.frecuencia_mic, self.canales_mic = FRECUENCIA, 1
 
         # El parlante se abre una sola vez y queda abierto (ver voces.Salida).
         self.salida = voces.abrir_salida(self.parlante, config["parlante_abierto"], config["mantener_parlante"])
@@ -461,6 +462,7 @@ class Audio:
         if not palabras:
             sys.exit("Ninguna palabra de activación es reconocible. Cambia palabra_activacion en config.json")
         self.palabras = palabras
+        self.modelo_vosk = modelo_vosk
         self.nuevo_detector = lambda: KaldiRecognizer(
             modelo_vosk, FRECUENCIA, json.dumps(palabras + ["[unk]"], ensure_ascii=False)
         )
@@ -471,22 +473,39 @@ class Audio:
             print(f"Cargando transcripción (Whisper {config['whisper']})…")
             self.whisper = WhisperModel(config["whisper"], device="cpu", compute_type="int8")
 
-        # Vosk y Whisper quieren 16000 Hz. Si el micrófono no lo admite (pasa con varios USB),
-        # se graba a la frecuencia propia del micrófono y cada bloque se convierte.
+        # Vosk y Whisper quieren 16000 Hz en mono. Muchos micrófonos USB solo graban a su propia
+        # frecuencia, o solo en estéreo: se busca una combinación que acepten y se convierte.
+        entrada = self.microfono if self.microfono is not None else sounddevice.default.device[0]
         try:
-            sounddevice.check_input_settings(device=self.microfono, channels=1, dtype="int16", samplerate=FRECUENCIA)
+            datos = sounddevice.query_devices(entrada)
         except Exception:
-            entrada = self.microfono if self.microfono is not None else sounddevice.default.device[0]
-            self.frecuencia_mic = int(sounddevice.query_devices(entrada)["default_samplerate"])
-            print(f"El micrófono no admite {FRECUENCIA} Hz: grabo a {self.frecuencia_mic} Hz y convierto.")
+            sys.exit("No encuentro ningún micrófono. Corre: ./venv/bin/python claudio.py --audio")
+        propia = int(datos["default_samplerate"])
+        maximo = max(1, int(datos["max_input_channels"]))
+        elegida = None
+        for frecuencia, canales in ((FRECUENCIA, 1), (propia, 1), (FRECUENCIA, min(2, maximo)), (propia, min(2, maximo))):
+            try:
+                sounddevice.check_input_settings(device=self.microfono, channels=canales, dtype="int16", samplerate=frecuencia)
+                elegida = (frecuencia, canales)
+                break
+            except Exception:
+                continue
+        if elegida is None:
+            sys.exit(f"El micrófono «{datos['name']}» no acepta ningún formato conocido. Pégale este error a quien te ayuda.")
+        self.frecuencia_mic, self.canales_mic = elegida
+        if elegida != (FRECUENCIA, 1):
+            print(f"Micrófono a {self.frecuencia_mic} Hz y {self.canales_mic} canal(es): convierto a {FRECUENCIA} Hz mono.")
         self.entrada = sounddevice.RawInputStream(
-            samplerate=self.frecuencia_mic, blocksize=self.frecuencia_mic // 10, channels=1, dtype="int16",
-            device=self.microfono, callback=self._llega_audio,
+            samplerate=self.frecuencia_mic, blocksize=self.frecuencia_mic // 10, channels=self.canales_mic,
+            dtype="int16", device=self.microfono, callback=self._llega_audio,
         )
         self.entrada.start()
 
     def _llega_audio(self, datos, cuadros, tiempo, estado):
         bloque = bytes(datos)
+        if self.canales_mic > 1:  # estéreo → mono
+            muestras = self.np.frombuffer(bloque, dtype=self.np.int16).reshape(-1, self.canales_mic)
+            bloque = muestras.mean(axis=1).astype(self.np.int16).tobytes()
         if self.frecuencia_mic != FRECUENCIA:
             muestras = self.np.frombuffer(bloque, dtype=self.np.int16)
             bloque = voces.cambiar_frecuencia(muestras, self.frecuencia_mic, FRECUENCIA).tobytes()
@@ -685,6 +704,57 @@ class Relleno:
         self.reloj.cancel()
 
 
+def prueba_oido(config, segundos=20):
+    """Para `claudio.py --oido`: muestra cuánto volumen llega del micrófono y qué entiende."""
+    from vosk import KaldiRecognizer
+    config = dict(config, rellenos=False)
+    audio = Audio(config)
+    libre = KaldiRecognizer(audio.modelo_vosk, FRECUENCIA)  # sin vocabulario cerrado: escribe todo lo que oye
+    detector = audio.nuevo_detector()
+    umbral = float(config["umbral_minimo"])
+    print(f"\nHabla durante {segundos} segundos; di «{audio.palabras[0]}» varias veces y alguna frase.")
+    print(f"Para que te escuche, mientras hablas el volumen tiene que pasar de {umbral:.0f}.\n")
+    maximo, palabra, oido, fin = 0.0, 0, [], time.time() + segundos
+    tramo, inicio_tramo = 0.0, time.time()
+    while time.time() < fin:
+        try:
+            bloque = audio.cola.get(timeout=1)
+        except queue.Empty:
+            print("  ✖ no llega nada del micrófono")
+            continue
+        volumen = audio._volumen(bloque)
+        maximo, tramo = max(maximo, volumen), max(tramo, volumen)
+        if audio._oye_palabra(detector, bloque):
+            palabra += 1
+            print(f"  ✔ OÍ «{audio.palabras[0]}»")
+            detector = audio.nuevo_detector()
+        if libre.AcceptWaveform(bloque):
+            texto = json.loads(libre.Result()).get("text", "")
+            if texto:
+                oido.append(texto)
+                print(f"  🗣  entendí: «{texto}»")
+        if time.time() - inicio_tramo >= 1:
+            barra = "█" * min(30, int(tramo / max(umbral, 1) * 10))
+            print(f"  volumen {tramo:6.0f} {barra}{'  ← suficiente' if tramo > umbral else ''}")
+            tramo, inicio_tramo = 0.0, time.time()
+    print("\n── Resultado ──")
+    if maximo < 5:
+        print("No llega sonido: el micrófono está silenciado, desconectado, o se eligió otro.\n"
+              "Revisa con: ./venv/bin/python claudio.py --audio   y el volumen de grabación con: alsamixer (F4)")
+    elif maximo < umbral:
+        sugerido = max(30, int(maximo * 0.4))
+        print(f"El micrófono funciona pero llega muy bajo (máximo {maximo:.0f}, hace falta {umbral:.0f}).\n"
+              f"Sube la grabación con alsamixer (F6 elige el micrófono, F4 la grabación, flecha arriba),\n"
+              f"o pon en config.json:  \"umbral_minimo\": {sugerido},")
+    else:
+        print(f"Volumen bien (máximo {maximo:.0f}).")
+    if palabra:
+        print(f"Reconoció «{audio.palabras[0]}» {palabra} vez/veces: la activación funciona.")
+    elif maximo >= 5:
+        print(f"No reconoció «{audio.palabras[0]}» ni una vez. Si en «entendí» aparece otra palabra cuando lo dices,\n"
+              "dímelo: se puede agregar como palabra de activación.")
+
+
 def iniciar_avisos(config, audio, cerebro):
     """Recordatorios y resumen diario: avisan en voz alta (o por pantalla si no hay parlante)."""
     def decir(frase):
@@ -790,6 +860,7 @@ def main():
     opciones.add_argument("--audio", action="store_true", help="listar micrófonos y parlantes")
     opciones.add_argument("--modelos", action="store_true", help="listar los modelos de Groq")
     opciones.add_argument("--casa", action="store_true", help="comprobar la conexión con Home Assistant")
+    opciones.add_argument("--oido", action="store_true", help="probar el micrófono y la palabra de activación")
     opciones.add_argument("--config", default=str(AQUI / "config.json"))
     args = opciones.parse_args()
     if args.audio:
@@ -812,6 +883,12 @@ def main():
         print('\nPara forzar otro, pon su número en config.json: "microfono": 2, "parlante": 1')
         return
     config = cargar_config(Path(args.config))
+    if args.oido:
+        try:
+            prueba_oido(config)
+        except KeyboardInterrupt:
+            pass
+        return
     if args.casa:
         print(herramientas.diagnostico_casa(config))
         return

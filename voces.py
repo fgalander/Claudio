@@ -131,10 +131,16 @@ def elegir_dispositivo(configurado, salida=True):
         return configurado
     try:
         import sounddevice
-        for numero, dispositivo in enumerate(sounddevice.query_devices()):
-            canales = dispositivo["max_output_channels" if salida else "max_input_channels"]
-            if canales > 0 and "usb" in dispositivo["name"].lower():
+        lista = list(sounddevice.query_devices())
+        clave = "max_output_channels" if salida else "max_input_channels"
+        for numero, dispositivo in enumerate(lista):
+            if dispositivo[clave] > 0 and "usb" in dispositivo["name"].lower():
                 return numero
+        if not salida:
+            # Micrófonos que no dicen "USB" en el nombre: el primero que sea una placa real.
+            for numero, dispositivo in enumerate(lista):
+                if dispositivo[clave] > 0 and "(hw:" in dispositivo["name"]:
+                    return numero
     except Exception:
         pass
     return None

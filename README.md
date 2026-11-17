@@ -118,6 +118,9 @@ Eso prueba el cerebro por teclado. Para la voz:
 ¿Aún sin micrófono? Con `./venv/bin/python claudio.py --hablar` le escribes por teclado y
 responde por el parlante, mostrando cuánto tarda en pensar y en generar la voz.
 
+Si no te oye, `./venv/bin/python claudio.py --oido` muestra durante 20 segundos cuánto
+volumen llega del micrófono y qué entiende, y al final dice qué ajustar.
+
 Si no te oye o no suena, `./venv/bin/python claudio.py --audio` lista los dispositivos;
 pon el número del micrófono y del parlante en `config.json` (`microfono`, `parlante`).
 
