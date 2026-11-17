@@ -16,6 +16,7 @@
 #   python claudio.py --hablar   tú escribes y él responde por el parlante (sin micrófono)
 #   python claudio.py --audio    lista los micrófonos y parlantes que ve el sistema
 #   python claudio.py --modelos  lista los modelos que ofrece Groq con tu clave
+#   python claudio.py --casa     comprueba la conexión con Home Assistant y lista los dispositivos
 import argparse
 import datetime
 import hashlib
@@ -788,6 +789,7 @@ def main():
     opciones.add_argument("--hablar", action="store_true", help="con --texto: tú escribes y él responde por el parlante")
     opciones.add_argument("--audio", action="store_true", help="listar micrófonos y parlantes")
     opciones.add_argument("--modelos", action="store_true", help="listar los modelos de Groq")
+    opciones.add_argument("--casa", action="store_true", help="comprobar la conexión con Home Assistant")
     opciones.add_argument("--config", default=str(AQUI / "config.json"))
     args = opciones.parse_args()
     if args.audio:
@@ -810,6 +812,9 @@ def main():
         print('\nPara forzar otro, pon su número en config.json: "microfono": 2, "parlante": 1')
         return
     config = cargar_config(Path(args.config))
+    if args.casa:
+        print(herramientas.diagnostico_casa(config))
+        return
     if args.modelos:
         print("\n".join(modelos_groq(config)))
         print('\nPon el elegido en config.json, en groq → modelo (para el oído, uno "whisper").')

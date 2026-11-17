@@ -283,3 +283,54 @@ def _encender_pc(pc):
         enchufe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         enchufe.sendto(b"\xff" * 6 + mac * 16, ("255.255.255.255", 9))
     return "Señal de encendido enviada. El computador tarda cerca de un minuto en arrancar."
+
+
+def diagnostico_casa(config):
+    """Para `claudio.py --casa`: dice en castellano si la conexión con Home Assistant funciona."""
+    casa = config.get("casa", {})
+    url, token = str(casa.get("url") or "").strip(), str(casa.get("token") or "").strip()
+    if not url or not token:
+        faltan = " y ".join(n for n, v in (("la dirección («url»)", url), ("el token", token)) if not v)
+        return f"En config.json, dentro de «casa», falta {faltan}. Sin eso Claudio no puede manejar la casa."
+    if not url.startswith(("http://", "https://")):
+        return f"La dirección «{url}» tiene que empezar con http:// (por ejemplo http://127.0.0.1:8123)."
+    try:
+        estados = _http(f"{url.rstrip('/')}/api/states", {"Authorization": f"Bearer {token}"}, espera=8)
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            return ("Home Assistant respondió, pero rechazó el token. Crea uno nuevo (tu perfil → Seguridad → "
+                    "Tokens de acceso de larga duración) y pégalo completo en config.json, sin espacios ni saltos de línea.")
+        return f"Home Assistant respondió con el error {error.code}. Revisa que la dirección sea la correcta."
+    except (urllib.error.URLError, OSError) as error:
+        return (f"No pude conectar con {url} ({getattr(error, 'reason', error)}).\n"
+                "Revisa que Home Assistant esté encendido y que la dirección y el puerto (:8123) sean correctos.")
+    if not isinstance(estados, list):
+        return f"En {url} respondió algo que no parece Home Assistant. Revisa la dirección."
+    lineas = [f"Conexión correcta con Home Assistant en {url}."]
+    propios = casa.get("dispositivos") or {}
+    if propios:
+        existentes = {e.get("entity_id") for e in estados}
+        lineas.append(f"\nconfig.json tiene una lista propia de {len(propios)} dispositivos (solo esos se usan):")
+        for nombre, entidad in propios.items():
+            lineas.append(f"  {'✔' if entidad in existentes else '✖ NO EXISTE'}  {nombre}  →  {entidad}")
+        if any(entidad not in existentes for entidad in propios.values()):
+            lineas.append('Para usar todos los de Home Assistant, deja la lista vacía:  "dispositivos": {}')
+        return "\n".join(lineas)
+    _casa.clear()
+    encontrados = _dispositivos(casa)
+    if not encontrados:
+        lineas.append("Pero no encontré ningún dispositivo que Claudio pueda manejar (luces, enchufes, televisores…).")
+        return "\n".join(lineas)
+    lineas.append(f"Claudio puede manejar {len(encontrados)} dispositivos, con estos nombres:")
+    por_tipo = {}
+    for nombre, entidad in sorted(encontrados.items()):
+        por_tipo.setdefault(entidad.split(".")[0], []).append(nombre)
+    tipos = {"light": "Luces", "switch": "Enchufes e interruptores", "media_player": "Televisores y parlantes",
+             "sensor": "Sensores", "binary_sensor": "Sensores de sí/no", "scene": "Escenas", "cover": "Persianas",
+             "climate": "Climatización", "fan": "Ventiladores", "script": "Rutinas"}
+    for tipo, nombres in por_tipo.items():
+        lineas.append(f"\n{tipos.get(tipo, tipo)}:")
+        lineas.extend(f"  {nombre}" for nombre in nombres[:40])
+        if len(nombres) > 40:
+            lineas.append(f"  … y {len(nombres) - 40} más")
+    return "\n".join(lineas)

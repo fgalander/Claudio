@@ -179,6 +179,9 @@ Con `dispositivos` vacío, Claudio lee solo todos los que Home Assistant tenga y
 por el nombre que les pusiste allá. Si prefieres limitar o renombrar, lista los que
 quieras: `"dispositivos": { "luz del living": "light.living" }`.
 
+Para comprobar la conexión y ver con qué nombres quedaron tus dispositivos:
+`./venv/bin/python claudio.py --casa`.
+
 Qué puede hacer: encender, apagar y alternar; **brillo** («pon la luz al cuarenta por
 ciento»); **color** («ponla azul», «luz cálida»); **temperatura** del aire («pon el aire
 en veintidós»); abrir y cerrar persianas; activar **escenas** («modo cine»); volumen de
